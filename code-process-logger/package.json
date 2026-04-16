@@ -1,0 +1,80 @@
+{
+  "name": "code-process-logger",
+  "displayName": "Code Process Logger",
+  "description": "VS Code extension for logging coding process data in ProgSnap2 format — tracks edits, pauses, and productive struggle.",
+  "version": "0.1.0",
+  "publisher": "code-process-logger",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codeProcessLogger.startSession",
+        "title": "Code Logger: Start Session"
+      },
+      {
+        "command": "codeProcessLogger.stopSession",
+        "title": "Code Logger: Stop Session"
+      },
+      {
+        "command": "codeProcessLogger.setSubjectId",
+        "title": "Code Logger: Set Subject ID"
+      },
+      {
+        "command": "codeProcessLogger.setAssignmentId",
+        "title": "Code Logger: Set Assignment ID"
+      }
+    ],
+    "configuration": {
+      "title": "Code Process Logger",
+      "properties": {
+        "codeProcessLogger.outputDir": {
+          "type": "string",
+          "default": "",
+          "description": "Directory to save ProgSnap2 log files. Defaults to workspace/.code-process-logs"
+        },
+        "codeProcessLogger.shortPauseThreshold": {
+          "type": "number",
+          "default": 1000,
+          "description": "Milliseconds of inactivity to group edits into one chunk"
+        },
+        "codeProcessLogger.midPauseThreshold": {
+          "type": "number",
+          "default": 10000,
+          "description": "Milliseconds of inactivity before enabling autocomplete"
+        },
+        "codeProcessLogger.longPauseThreshold": {
+          "type": "number",
+          "default": 20000,
+          "description": "Milliseconds of inactivity before asking pause reason"
+        },
+        "codeProcessLogger.serverUrl": {
+          "type": "string",
+          "default": "https://stingray-finalize-skydiver.ngrok-free.dev",
+          "description": "URL of the backend server for LLM autocomplete and log collection"
+        },
+        "codeProcessLogger.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically start logging when a workspace is opened"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}
