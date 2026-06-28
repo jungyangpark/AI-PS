@@ -1,0 +1,324 @@
+import * as vscode from 'vscode';
+import * as http from 'http';
+import * as https from 'https';
+
+/**
+ * Simple ghost text autocomplete for Level 3.
+ *
+ * Flow:
+ * 1. Typing → fetch & show ghost (if no cache or cache mismatch)
+ * 2. Tab → insert code & hide ghost
+ * 3. Enter → show next cached line ghost
+ */
+export class LLMCompletionProvider implements vscode.Disposable {
+  private serverUrl: string;
+  private enabled: boolean = false;
+  private subjectId: string = '';
+  private level: number = 3;
+
+  private ghostDecoration: vscode.TextEditorDecorationType;
+
+  // Cache system
+  private cachedLines: string[] = [];
+  private cachedIndex: number = 0;
+  private ghostVisible: boolean = false;
+
+  // Flags
+  private isInserting: boolean = false;
+
+  private disposables: vscode.Disposable[] = [];
+  private tabDisposable: vscode.Disposable | undefined;
+  private changeListener: vscode.Disposable | undefined;
+  private onDisableCallback: (() => void) | undefined;
+
+  constructor(serverUrl: string) {
+    this.serverUrl = serverUrl;
+
+    console.log('🔵 NEW CompletionProvider v2.0 loaded!');
+
+    this.ghostDecoration = vscode.window.createTextEditorDecorationType({
+      after: {
+        color: new vscode.ThemeColor('editorGhostText.foreground'),
+        fontStyle: 'italic',
+      },
+    });
+  }
+
+  startListening(): void {
+    if (this.changeListener) { return; }
+
+    this.changeListener = vscode.workspace.onDidChangeTextDocument(e => {
+      if (e.document.uri.scheme !== 'file') { return; }
+      if (this.isInserting) { return; }
+      if (!this.enabled) { return; }
+
+      for (const change of e.contentChanges) {
+        this.handleChange(change);
+      }
+    });
+  }
+
+  private handleChange(change: vscode.TextDocumentContentChangeEvent): void {
+    console.log('📝 handleChange called, text:', JSON.stringify(change.text), 'isInserting:', this.isInserting);
+
+    // Single char typing (not space, not tab)
+    if (change.text.length === 1 && change.rangeLength === 0 &&
+        change.text !== ' ' && change.text !== '\t' && change.text !== '\n') {
+      this.handleTyping(change.text);
+      return;
+    }
+
+    // Any other change (delete, paste, space, tab, enter, etc.)
+    if (change.text.length !== 0 || change.rangeLength !== 0) {
+      console.log('📝 Other change detected, clearing');
+      this.clearAll();
+      return;
+    }
+  }
+
+
+  private handleTyping(char: string): void {
+    if (this.level === 1) {
+      // Level 1: follow-along (not implemented yet)
+      this.clearAll();
+      this.fetchAndShowGhost();
+    } else if (this.level === 2) {
+      // Level 2: any typing disables autocomplete
+      this.clearAll();
+      this.setEnabled(false);
+      if (this.onDisableCallback) {
+        this.onDisableCallback();
+      }
+    } else if (this.level === 3) {
+      // Level 3: typing triggers fetch or validates cache
+      if (this.cachedLines.length === 0) {
+        // No cache, fetch new
+        this.fetchAndShowGhost();
+      } else {
+        // Check if typing matches cache
+        const currentLine = this.cachedLines[this.cachedIndex];
+        // For now, any typing clears cache and re-fetches
+        // TODO: Could add smarter validation
+        this.clearAll();
+        this.fetchAndShowGhost();
+      }
+    }
+  }
+
+  registerTabHandler(): void {
+    if (this.tabDisposable) { return; }
+
+    this.tabDisposable = vscode.commands.registerCommand('codeProcessLogger.handleTab', async () => {
+      if (this.level === 3 && this.ghostVisible) {
+        await this.acceptGhost();
+      } else {
+        // No ghost or different level: normal tab
+        vscode.commands.executeCommand('editor.action.indentLines');
+      }
+    });
+  }
+
+  private async acceptGhost(): Promise<void> {
+    console.log('🟢 Tab pressed - acceptGhost() called');
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || this.cachedLines.length === 0) { return; }
+
+    const codeToInsert = this.cachedLines[0];
+    console.log('🟢 Inserting entire completion:', JSON.stringify(codeToInsert).substring(0, 100));
+
+    this.isInserting = true;
+    this.hideGhost();
+
+    // Insert entire completion at once
+    await editor.edit(editBuilder => {
+      editBuilder.insert(editor.selection.active, codeToInsert);
+    });
+
+    // Clear cache after insertion
+    this.clearAll();
+
+    setTimeout(() => {
+      this.isInserting = false;
+      console.log('🟢 Insertion complete, cache cleared');
+    }, 100);
+  }
+
+  private async fetchAndShowGhost(): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) { return; }
+
+    const document = editor.document;
+    const position = editor.selection.active;
+
+    const prefix = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
+    const suffix = document.getText(new vscode.Range(position, document.lineAt(document.lineCount - 1).range.end));
+    const language = document.languageId;
+    const fileName = document.fileName.split('/').pop() || 'untitled';
+
+    const cancellation = new vscode.CancellationTokenSource();
+
+    try {
+      const completion = await this.fetchCompletion(prefix, suffix, language, fileName, cancellation.token);
+      if (completion && completion.trim().length > 0) {
+        // Store entire completion as single item
+        this.cachedLines = [completion];
+        this.cachedIndex = 0;
+        this.showGhost(completion);
+      }
+    } catch {
+      // silently fail
+    } finally {
+      cancellation.dispose();
+    }
+  }
+
+  private showGhost(text: string): void {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) { return; }
+
+    this.hideGhost();
+
+    editor.setDecorations(this.ghostDecoration, [
+      {
+        range: new vscode.Range(editor.selection.active, editor.selection.active),
+        renderOptions: {
+          after: {
+            contentText: text,
+            color: new vscode.ThemeColor('editorGhostText.foreground'),
+            fontStyle: 'italic',
+          },
+        },
+      },
+    ]);
+
+    this.ghostVisible = true;
+    vscode.commands.executeCommand('setContext', 'codeProcessLogger.hasCompletion', true);
+  }
+
+  private hideGhost(): void {
+    const editor = vscode.window.activeTextEditor;
+    if (editor) {
+      editor.setDecorations(this.ghostDecoration, []);
+    }
+
+    this.ghostVisible = false;
+    vscode.commands.executeCommand('setContext', 'codeProcessLogger.hasCompletion', false);
+  }
+
+  private clearAll(): void {
+    this.hideGhost();
+    this.cachedLines = [];
+    this.cachedIndex = 0;
+  }
+
+  fetchCompletion(
+    prefix: string,
+    suffix: string,
+    language: string,
+    fileName: string,
+    token: vscode.CancellationToken,
+  ): Promise<string | null> {
+    return new Promise((resolve) => {
+      const body = JSON.stringify({
+        prefix: prefix.slice(-2000),
+        suffix: suffix.slice(0, 500),
+        language,
+        fileName,
+        subjectId: this.subjectId,
+      });
+
+      const url = new URL(`${this.serverUrl}/api/complete`);
+      const isHttps = url.protocol === 'https:';
+      const lib = isHttps ? https : http;
+
+      const req = lib.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+          },
+          timeout: 5000,
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            try {
+              const json = JSON.parse(data);
+              resolve(json.completion || null);
+            } catch {
+              resolve(null);
+            }
+          });
+        },
+      );
+
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+      token.onCancellationRequested(() => { req.destroy(); resolve(null); });
+
+      req.write(body);
+      req.end();
+    });
+  }
+
+  // Public API (keep same interface)
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+    if (!enabled) {
+      this.clearAll();
+    }
+  }
+
+  setSubjectId(subjectId: string): void {
+    this.subjectId = subjectId;
+  }
+
+  setLevel(level: number): void {
+    this.level = level;
+  }
+
+  getLevel(): number {
+    return this.level;
+  }
+
+  setOnDisableCallback(callback: () => void): void {
+    this.onDisableCallback = callback;
+  }
+
+  isEnabled(): boolean {
+    return this.enabled;
+  }
+
+  getOriginalCompletion(): string | null {
+    if (this.cachedIndex < this.cachedLines.length) {
+      return this.cachedLines[this.cachedIndex];
+    }
+    return null;
+  }
+
+  getMatchedChars(): number {
+    return 0; // Not used in new design
+  }
+
+  clearGhost(): void {
+    this.clearAll();
+  }
+
+  triggerCompletion(): void {
+    // Public API for external triggering
+    this.fetchAndShowGhost();
+  }
+
+  dispose(): void {
+    this.clearAll();
+    this.ghostDecoration.dispose();
+    if (this.tabDisposable) { this.tabDisposable.dispose(); }
+    if (this.changeListener) { this.changeListener.dispose(); }
+    this.disposables.forEach(d => d.dispose());
+  }
+}

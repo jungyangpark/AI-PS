@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run compile:*)",
+      "Bash(npx @vscode/vsce package:*)",
+      "Bash(code --install-extension:*)",
+      "Bash(code --uninstall-extension:*)",
+      "Bash(cat:*)",
+      "Bash(npm --prefix /Users/jungyang/Desktop/programming_tool/code-process-server run build)",
+      "Bash(npm --prefix /Users/jungyang/Desktop/programming_tool/code-process-logger run compile)",
+      "Bash(npm run build:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

@@ -1,0 +1,15 @@
+{
+    "editor.quickSuggestions": {
+        "other": false,
+        "comments": false,
+        "strings": false
+    },
+    "editor.suggestOnTriggerCharacters": false,
+    "editor.wordBasedSuggestions": "off",
+    "github.copilot.enable": {
+        "*": false
+    },
+    "editor.inlineSuggest.suppressSuggestions": false,
+    "editor.formatOnPaste": false,
+    "python.analysis.autoIndent": false
+}

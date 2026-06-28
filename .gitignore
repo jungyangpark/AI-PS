@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+out/
+dist/
+*.vsix
+
+# Environment variables (API keys!)
+.env
+.env.local
+.env.*.local
+
+# Logs
+.code-process-logs/
+code-process-server/logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode-test/
+*.swp
+
+# TypeScript
+*.tsbuildinfo
+
+# PDF File
+*.pdf
+
+# Assignment file
+post-test/
+pre-test/
+extract_*.py
+assignment*.py
+temp.py

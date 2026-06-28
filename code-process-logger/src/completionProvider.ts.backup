@@ -1,0 +1,390 @@
+import * as vscode from 'vscode';
+import * as http from 'http';
+import * as https from 'https';
+
+/**
+ * Decoration-based ghost text with direct document change handling.
+ *
+ * Level 1: ghost shown, Tab disabled, same chars → ghost shrinks, different → ghost clears
+ * Level 2: ghost shown, Tab disabled, any typing → ghost clears
+ * Level 3: ghost shown, Tab accepts, any typing → ghost clears
+ */
+export class LLMCompletionProvider implements vscode.Disposable {
+  private serverUrl: string;
+  private enabled: boolean = false;
+  private subjectId: string = '';
+  private level: number = 3;
+
+  private ghostDecoration: vscode.TextEditorDecorationType;
+  private currentCompletion: string | null = null;
+  private matchedChars: number = 0;
+
+  // Multi-line cache system
+  private cachedLines: string[] = [];
+  private cachedLineIndex: number = 0;
+  private cachedPrefix: string = '';
+
+  // Tab/Enter state tracking
+  private waitingForEnter: boolean = false;
+
+  private disposables: vscode.Disposable[] = [];
+  private tabDisposable: vscode.Disposable | undefined;
+  private changeListener: vscode.Disposable | undefined;
+  private onDisableCallback: (() => void) | undefined;
+  private isInsertingCompletion: boolean = false;
+
+  constructor(serverUrl: string) {
+    this.serverUrl = serverUrl;
+
+    this.ghostDecoration = vscode.window.createTextEditorDecorationType({
+      after: {
+        color: new vscode.ThemeColor('editorGhostText.foreground'),
+        fontStyle: 'italic',
+      },
+    });
+  }
+
+  startListening(): void {
+    if (this.changeListener) { return; }
+
+    this.changeListener = vscode.workspace.onDidChangeTextDocument(e => {
+      if (e.document.uri.scheme !== 'file') { return; }
+      if (this.isInsertingCompletion) {
+        return;
+      }
+
+      for (const change of e.contentChanges) {
+        // Detect Enter key (newline, possibly with auto-indent)
+        // Check for any newline character in the change
+        if (change.text.indexOf('\n') !== -1) {
+          if (this.level === 3 && this.waitingForEnter && this.cachedLines.length > 0) {
+            // Level 3: After Tab, Enter shows next cached ghost
+            this.waitingForEnter = false;
+
+            if (this.cachedLineIndex < this.cachedLines.length) {
+              // Show next cached line
+              const nextLine = this.cachedLines[this.cachedLineIndex];
+              this.currentCompletion = '\n' + nextLine;
+              this.matchedChars = 0;
+
+              setTimeout(() => {
+                const ed = vscode.window.activeTextEditor;
+                if (ed) {
+                  this.renderGhost(ed, ed.selection.active, nextLine);
+                  vscode.commands.executeCommand('setContext', 'codeProcessLogger.hasCompletion', true);
+                }
+              }, 50);
+            } else if (this.enabled) {
+              // Cache exhausted, fetch new completion
+              setTimeout(() => {
+                this.triggerCompletion();
+              }, 50);
+            }
+          } else {
+            // Level 1, 2 or not waiting for Enter: just clear ghost
+            if (this.currentCompletion) {
+              this.clearGhost();
+            }
+          }
+          return;
+        }
+
+        // Single char insert (normal typing) - not space, not tab
+        if (change.text.length === 1 && change.rangeLength === 0 &&
+            change.text !== ' ' && change.text !== '\t') {
+          if (this.currentCompletion) {
+            this.handleTypedChar(change.text);
+          } else if (this.enabled) {
+            // No ghost but autocomplete is on: fetch new completion
+            this.triggerCompletion();
+          }
+          return;
+        }
+        // Any other change (delete, paste, multi-char, space, tab): clear ghost
+        if (change.text.length !== 0 || change.rangeLength !== 0) {
+          this.clearGhost();
+          return;
+        }
+      }
+    });
+  }
+
+  private handleTypedChar(char: string): void {
+    if (!this.currentCompletion) { return; }
+
+    if (this.level === 1) {
+      const expected = this.currentCompletion[this.matchedChars];
+      if (char === expected) {
+        this.matchedChars++;
+        // Immediately clear old ghost so typed char is visible
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+          editor.setDecorations(this.ghostDecoration, []);
+        }
+        if (this.matchedChars >= this.currentCompletion.length) {
+          this.clearGhost();
+          // Fetch new completion after completing current one
+          this.triggerCompletion();
+          return;
+        }
+        // Re-render ghost with remaining text after cursor settles
+        const remaining = this.currentCompletion.substring(this.matchedChars);
+        setTimeout(() => {
+          const ed = vscode.window.activeTextEditor;
+          if (ed) {
+            this.renderGhost(ed, ed.selection.active, remaining);
+          }
+        }, 10);
+        return;
+      }
+      // Mismatch: clear and fetch new completion
+      this.clearGhost();
+      this.triggerCompletion();
+      return;
+    }
+
+    if (this.level === 2) {
+      // Level 2: any typing disables autocomplete and clears ghost
+      this.clearGhost();
+      this.setEnabled(false);
+      if (this.onDisableCallback) {
+        this.onDisableCallback();
+      }
+      return;
+    }
+
+    // Level 3: any typing clears ghost and fetches new completion
+    this.clearGhost();
+    this.triggerCompletion();
+  }
+
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+    if (!enabled && this.level !== 1) {
+      this.clearGhost();
+    }
+  }
+
+  setSubjectId(subjectId: string): void {
+    this.subjectId = subjectId;
+  }
+
+  setLevel(level: number): void {
+    this.level = level;
+  }
+
+  getLevel(): number {
+    return this.level;
+  }
+
+  setOnDisableCallback(callback: () => void): void {
+    this.onDisableCallback = callback;
+  }
+
+  isEnabled(): boolean {
+    return this.enabled;
+  }
+
+  getOriginalCompletion(): string | null {
+    return this.currentCompletion;
+  }
+
+  getMatchedChars(): number {
+    return this.matchedChars;
+  }
+
+  registerTabHandler(): void {
+    if (this.tabDisposable) { return; }
+
+    this.tabDisposable = vscode.commands.registerCommand('codeProcessLogger.handleTab', async () => {
+      if (this.level === 3 && this.currentCompletion && !this.waitingForEnter) {
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+          // Insert code only (without leading \n)
+          let codeToInsert = this.currentCompletion.substring(this.matchedChars);
+          if (codeToInsert.startsWith('\n')) {
+            codeToInsert = codeToInsert.substring(1);
+          }
+
+          this.isInsertingCompletion = true;
+          this.clearGhostDecorationOnly();
+
+          await editor.edit(editBuilder => {
+            editBuilder.insert(editor.selection.active, codeToInsert);
+          });
+
+          // Move to next cached line
+          this.cachedLineIndex++;
+
+          // Set waiting for Enter - don't show next ghost yet
+          this.waitingForEnter = true;
+
+          setTimeout(() => {
+            this.isInsertingCompletion = false;
+          }, 100);
+        }
+      } else {
+        // Level 1 & 2: Tab does normal indent
+        this.clearGhost();
+        vscode.commands.executeCommand('editor.action.indentLines');
+      }
+    });
+  }
+
+  async triggerCompletion(): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) { return; }
+
+    const document = editor.document;
+    const position = editor.selection.active;
+
+    const prefix = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
+    const suffix = document.getText(new vscode.Range(position, document.lineAt(document.lineCount - 1).range.end));
+    const language = document.languageId;
+    const fileName = document.fileName.split('/').pop() || 'untitled';
+
+    const cancellation = new vscode.CancellationTokenSource();
+
+    try {
+      const completion = await this.fetchCompletion(prefix, suffix, language, fileName, cancellation.token);
+      if (completion) {
+        if (this.level === 3) {
+          // Split into lines and cache them
+          const lines = completion.split('\n').map(line => line.trimEnd()).filter(line => line.length > 0);
+
+          if (lines.length > 0) {
+            this.cachedLines = lines;
+            this.cachedLineIndex = 0;
+            this.cachedPrefix = prefix;
+            this.waitingForEnter = false;
+
+            // Show first line as ghost
+            const firstLine = lines[0];
+            this.currentCompletion = '\n' + firstLine;
+            this.matchedChars = 0;
+            this.renderGhost(editor, position, firstLine);
+            vscode.commands.executeCommand('setContext', 'codeProcessLogger.hasCompletion', true);
+          }
+        } else {
+          // Level 1 & 2: single line behavior
+          const singleLine = completion.trim();
+          this.currentCompletion = singleLine;
+          this.matchedChars = 0;
+          this.renderGhost(editor, position, singleLine);
+          vscode.commands.executeCommand('setContext', 'codeProcessLogger.hasCompletion', true);
+        }
+      }
+    } catch {
+      // silently fail
+    } finally {
+      cancellation.dispose();
+    }
+  }
+
+  private renderGhost(editor: vscode.TextEditor, position: vscode.Position, text: string): void {
+    editor.setDecorations(this.ghostDecoration, []);
+
+    editor.setDecorations(this.ghostDecoration, [
+      {
+        range: new vscode.Range(position, position),
+        renderOptions: {
+          after: {
+            contentText: text,
+            color: new vscode.ThemeColor('editorGhostText.foreground'),
+            fontStyle: 'italic',
+          },
+        },
+      },
+    ]);
+  }
+
+  clearGhostDecorationOnly(): void {
+    // Clear decoration but keep cache
+    this.currentCompletion = null;
+    this.matchedChars = 0;
+    vscode.commands.executeCommand('setContext', 'codeProcessLogger.hasCompletion', false);
+
+    const editor = vscode.window.activeTextEditor;
+    if (editor) {
+      editor.setDecorations(this.ghostDecoration, []);
+    }
+  }
+
+  clearGhost(): void {
+    this.currentCompletion = null;
+    this.matchedChars = 0;
+    this.cachedLines = [];
+    this.cachedLineIndex = 0;
+    this.cachedPrefix = '';
+    this.waitingForEnter = false;
+    vscode.commands.executeCommand('setContext', 'codeProcessLogger.hasCompletion', false);
+
+    const editor = vscode.window.activeTextEditor;
+    if (editor) {
+      editor.setDecorations(this.ghostDecoration, []);
+    }
+  }
+
+  fetchCompletion(
+    prefix: string,
+    suffix: string,
+    language: string,
+    fileName: string,
+    token: vscode.CancellationToken,
+  ): Promise<string | null> {
+    return new Promise((resolve) => {
+      const body = JSON.stringify({
+        prefix: prefix.slice(-2000),
+        suffix: suffix.slice(0, 500),
+        language,
+        fileName,
+        subjectId: this.subjectId,
+      });
+
+      const url = new URL(`${this.serverUrl}/api/complete`);
+      const isHttps = url.protocol === 'https:';
+      const lib = isHttps ? https : http;
+
+      const req = lib.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+          },
+          timeout: 5000,
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            try {
+              const json = JSON.parse(data);
+              resolve(json.completion || null);
+            } catch {
+              resolve(null);
+            }
+          });
+        },
+      );
+
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+      token.onCancellationRequested(() => { req.destroy(); resolve(null); });
+
+      req.write(body);
+      req.end();
+    });
+  }
+
+  dispose(): void {
+    this.clearGhost();
+    this.ghostDecoration.dispose();
+    if (this.tabDisposable) { this.tabDisposable.dispose(); }
+    if (this.changeListener) { this.changeListener.dispose(); }
+    this.disposables.forEach(d => d.dispose());
+  }
+}
