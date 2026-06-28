@@ -8,7 +8,8 @@
       "Bash(cat:*)",
       "Bash(npm --prefix /Users/jungyang/Desktop/programming_tool/code-process-server run build)",
       "Bash(npm --prefix /Users/jungyang/Desktop/programming_tool/code-process-logger run compile)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []

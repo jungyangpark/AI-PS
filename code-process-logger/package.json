@@ -37,8 +37,8 @@
         "title": "AI-PS: Toggle Autocomplete"
       },
       {
-        "command": "codeProcessLogger.triggerQuestionMode",
-        "title": "AI-PS: Ask Question (Q&A Mode)"
+        "command": "codeProcessLogger.openChatbot",
+        "title": "AI-PS: Open Chatbot"
       }
     ],
     "keybindings": [
@@ -50,11 +50,6 @@
       {
         "command": "codeProcessLogger.toggleAutocomplete",
         "key": "escape",
-        "when": "editorTextFocus && codeProcessLogger.sessionActive"
-      },
-      {
-        "command": "codeProcessLogger.triggerQuestionMode",
-        "key": "shift+escape",
         "when": "editorTextFocus && codeProcessLogger.sessionActive"
       }
     ],

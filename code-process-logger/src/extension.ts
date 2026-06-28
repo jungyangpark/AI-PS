@@ -6,6 +6,7 @@ import { ProgSnap2Writer, EventType } from './progsnap2';
 import { EditTracker } from './editTracker';
 import { LLMCompletionProvider } from './completionProvider';
 import { LogUploader } from './logUploader';
+import { ChatbotPanel } from './chatbotPanel';
 
 let writer: ProgSnap2Writer | undefined;
 let editTracker: EditTracker | undefined;
@@ -37,7 +38,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('codeProcessLogger.toggleAutocomplete', () => toggleAutocomplete()),
     vscode.commands.registerCommand('codeProcessLogger.insertCompletion', () => insertCompletion()),
     vscode.commands.registerCommand('codeProcessLogger.handleTab', () => handleTab()),
-    vscode.commands.registerCommand('codeProcessLogger.triggerQuestionMode', () => triggerQuestionMode()),
+    vscode.commands.registerCommand('codeProcessLogger.openChatbot', () => ChatbotPanel.createOrShow(context.extensionUri)),
   );
 
   // Auto-start if configured
@@ -237,20 +238,6 @@ async function toggleAutocomplete(): Promise<void> {
   }
 }
 
-async function triggerQuestionMode(): Promise<void> {
-  if (!isSessionActive || !completionProvider) {
-    vscode.window.showWarningMessage('세션이 활성화되지 않았습니다 (No active session)');
-    return;
-  }
-
-  // Clear any existing completion first
-  await completionProvider.clearGhost();
-
-  // Enable and trigger in question mode
-  completionProvider.setEnabled(true);
-  await completionProvider.triggerCompletion(true); // true = questionMode
-  updateStatusBar(true, true, 'question');
-}
 
 async function insertCompletion(): Promise<void> {
   if (!completionProvider) {
