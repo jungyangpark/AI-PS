@@ -437,6 +437,31 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     });
     this.disposables.push(typeDisposable);
 
+    // Register Backspace handler: disable autocomplete when user deletes
+    const deleteLeftDisposable = vscode.commands.registerCommand('deleteLeft', async (args) => {
+      const editor = vscode.window.activeTextEditor;
+
+      this.logToFile('deleteLeft', {
+        enabled: this.enabled,
+        hasCompletion: !!this.cachedCompletion,
+        level: this.level
+      });
+
+      if (this.enabled && this.cachedCompletion && editor) {
+        // Ghost text is showing - disable autocomplete on backspace
+        await this.clearGhost();
+        this.enabled = false;
+        if (this.onDisableCallback) {
+          this.onDisableCallback();
+        }
+        this.logToFile('deleteLeft', { disabledAutocomplete: true });
+      }
+
+      // Execute normal backspace
+      return vscode.commands.executeCommand('default:deleteLeft', args);
+    });
+    this.disposables.push(deleteLeftDisposable);
+
     console.log('🔵 Keyboard handlers registered for ghost text');
   }
 
