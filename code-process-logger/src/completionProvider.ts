@@ -74,6 +74,10 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       displayCompletion = this.cachedCompletion.substring(this.matchedChars);
     }
 
+    // Remove leading newlines to prevent ghost text from appearing on multiple lines below cursor
+    // This happens when user presses Enter multiple times in blank lines
+    displayCompletion = displayCompletion.replace(/^\n+/, '');
+
     if (displayCompletion.length > 0) {
       this.logToFile('provideInlineCompletionItems', {
         returning: true,
@@ -442,30 +446,24 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
 
     // For whitespace characters (enter, tab, space), check if they match and increment matchedChars
     if (char === '\n' || char === '\r' || char === '\t' || char === ' ') {
-      const positionBefore = editor.selection.active;
-
       // Type the character (may trigger auto-indent)
       await vscode.commands.executeCommand('default:type', { text: char });
 
-      const positionAfter = editor.selection.active;
-
-      // For Enter key, check if auto-indent was applied
+      // For Enter key, only match the newline character itself
+      // Auto-indent spaces will be handled separately
       if (char === '\n' || char === '\r') {
-        const indent = positionAfter.character; // Columns of indent added
-
-        // Check if completion starts with newline + indent spaces
-        const expectedText = '\n' + ' '.repeat(indent);
-        if (currentCompletion.startsWith(expectedText)) {
-          this.matchedChars += expectedText.length;
-        } else if (currentCompletion.startsWith(char)) {
-          // Just newline without matching indent
-          this.matchedChars += char.length;
+        if (currentCompletion.startsWith('\n')) {
+          this.matchedChars += 1;
+        } else if (currentCompletion.startsWith('\r\n')) {
+          this.matchedChars += 2;
         }
-      } else {
-        // Tab or space
+      } else if (char === '\t' || char === ' ') {
+        // Tab or space - only match if it actually matches the completion
+        // Skip auto-indent spaces by checking if completion expects this whitespace
         if (currentCompletion.startsWith(char)) {
           this.matchedChars += char.length;
         }
+        // If doesn't match, it's probably auto-indent, just skip it
       }
 
       this.cachedPosition = editor.selection.active;
@@ -474,9 +472,13 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       return;
     }
 
-    if (currentCompletion.startsWith(char)) {
-      // Match! Increment matched chars
-      this.matchedChars += char.length;
+    // Skip leading whitespace in completion (auto-indent mismatch)
+    const trimmedCompletion = currentCompletion.trimStart();
+    const skippedWhitespace = currentCompletion.length - trimmedCompletion.length;
+
+    if (trimmedCompletion.startsWith(char)) {
+      // Match! Skip the leading whitespace and increment matched chars
+      this.matchedChars += skippedWhitespace + char.length;
       await vscode.commands.executeCommand('default:type', { text: char });
 
       // If no more completion left, clear everything and disable autocomplete
@@ -491,7 +493,7 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
         // Update position and re-trigger inline suggestion
         this.cachedPosition = editor.selection.active;
         await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
-        this.logToFile('handleLevel1Type', { matched: true, remaining: this.cachedCompletion.length - this.matchedChars });
+        this.logToFile('handleLevel1Type', { matched: true, remaining: this.cachedCompletion.length - this.matchedChars, skippedWhitespace });
       }
     } else {
       // Doesn't match: clear ghost text, disable autocomplete, and type normally
@@ -511,30 +513,24 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
 
     // For whitespace characters (enter, tab, space), check if they match and increment matchedChars
     if (char === '\n' || char === '\r' || char === '\t' || char === ' ') {
-      const positionBefore = editor.selection.active;
-
       // Type the character (may trigger auto-indent)
       await vscode.commands.executeCommand('default:type', { text: char });
 
-      const positionAfter = editor.selection.active;
-
-      // For Enter key, check if auto-indent was applied
+      // For Enter key, only match the newline character itself
+      // Auto-indent spaces will be handled separately
       if (char === '\n' || char === '\r') {
-        const indent = positionAfter.character; // Columns of indent added
-
-        // Check if completion starts with newline + indent spaces
-        const expectedText = '\n' + ' '.repeat(indent);
-        if (currentCompletion.startsWith(expectedText)) {
-          this.matchedChars += expectedText.length;
-        } else if (currentCompletion.startsWith(char)) {
-          // Just newline without matching indent
-          this.matchedChars += char.length;
+        if (currentCompletion.startsWith('\n')) {
+          this.matchedChars += 1;
+        } else if (currentCompletion.startsWith('\r\n')) {
+          this.matchedChars += 2;
         }
-      } else {
-        // Tab or space
+      } else if (char === '\t' || char === ' ') {
+        // Tab or space - only match if it actually matches the completion
+        // Skip auto-indent spaces by checking if completion expects this whitespace
         if (currentCompletion.startsWith(char)) {
           this.matchedChars += char.length;
         }
+        // If doesn't match, it's probably auto-indent, just skip it
       }
 
       this.cachedPosition = editor.selection.active;
@@ -543,9 +539,13 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       return;
     }
 
-    if (currentCompletion.startsWith(char)) {
-      // Match! Increment matched chars
-      this.matchedChars += char.length;
+    // Skip leading whitespace in completion (auto-indent mismatch)
+    const trimmedCompletion = currentCompletion.trimStart();
+    const skippedWhitespace = currentCompletion.length - trimmedCompletion.length;
+
+    if (trimmedCompletion.startsWith(char)) {
+      // Match! Skip the leading whitespace and increment matched chars
+      this.matchedChars += skippedWhitespace + char.length;
       await vscode.commands.executeCommand('default:type', { text: char });
 
       // If no more completion left, clear everything and disable autocomplete
@@ -560,7 +560,7 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
         // Update position and re-trigger inline suggestion
         this.cachedPosition = editor.selection.active;
         await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
-        this.logToFile('handleLevel3Type', { matched: true, remaining: this.cachedCompletion.length - this.matchedChars });
+        this.logToFile('handleLevel3Type', { matched: true, remaining: this.cachedCompletion.length - this.matchedChars, skippedWhitespace });
       }
     } else {
       // Doesn't match: clear ghost text, disable autocomplete, and type normally

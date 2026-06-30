@@ -9,7 +9,9 @@
       "Bash(npm --prefix /Users/jungyang/Desktop/programming_tool/code-process-server run build)",
       "Bash(npm --prefix /Users/jungyang/Desktop/programming_tool/code-process-logger run compile)",
       "Bash(npm run build:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
