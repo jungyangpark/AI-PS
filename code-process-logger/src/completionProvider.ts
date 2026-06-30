@@ -437,30 +437,32 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     });
     this.disposables.push(typeDisposable);
 
-    // Register Backspace handler: disable autocomplete when user deletes
-    const deleteLeftDisposable = vscode.commands.registerCommand('deleteLeft', async (args) => {
-      const editor = vscode.window.activeTextEditor;
-
-      this.logToFile('deleteLeft', {
-        enabled: this.enabled,
-        hasCompletion: !!this.cachedCompletion,
-        level: this.level
-      });
-
-      if (this.enabled && this.cachedCompletion && editor) {
-        // Ghost text is showing - disable autocomplete on backspace
-        await this.clearGhost();
-        this.enabled = false;
-        if (this.onDisableCallback) {
-          this.onDisableCallback();
-        }
-        this.logToFile('deleteLeft', { disabledAutocomplete: true });
+    // Listen for text deletion (backspace/delete) via document change events
+    const changeDisposable = vscode.workspace.onDidChangeTextDocument(e => {
+      if (!this.enabled || !this.cachedCompletion) {
+        return;
       }
 
-      // Execute normal backspace
-      return vscode.commands.executeCommand('default:deleteLeft', args);
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || e.document !== editor.document) {
+        return;
+      }
+
+      // Check if this was a deletion (contentChanges with empty text)
+      for (const change of e.contentChanges) {
+        if (change.text === '' && change.rangeLength > 0) {
+          // Text was deleted - disable autocomplete
+          this.clearGhost();
+          this.enabled = false;
+          if (this.onDisableCallback) {
+            this.onDisableCallback();
+          }
+          this.logToFile('textDeleted', { disabledAutocomplete: true });
+          break;
+        }
+      }
     });
-    this.disposables.push(deleteLeftDisposable);
+    this.disposables.push(changeDisposable);
 
     console.log('🔵 Keyboard handlers registered for ghost text');
   }
