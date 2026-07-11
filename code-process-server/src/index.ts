@@ -6,6 +6,7 @@ import { logsRouter } from './routes/logs';
 import { studentsRouter } from './routes/students';
 import { debugRouter } from './routes/debug';
 import chatRouter from './routes/chat';
+import submitRouter from './routes/submit';
 
 dotenv.config();
 
@@ -34,6 +35,9 @@ app.use('/api/debug', debugRouter);
 
 // Chatbot endpoint
 app.use('/api/chat', chatRouter);
+
+// Submit endpoint
+app.use('/api/submit', submitRouter);
 
 app.listen(PORT, () => {
   console.log(`Code Process Server running on port ${PORT}`);

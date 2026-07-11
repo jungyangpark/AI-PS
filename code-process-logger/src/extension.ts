@@ -11,9 +11,13 @@ import { ChatbotPanel } from './chatbotPanel';
 let writer: ProgSnap2Writer | undefined;
 let editTracker: EditTracker | undefined;
 let statusBarItem: vscode.StatusBarItem;
+let submitButton: vscode.StatusBarItem;
 let isSessionActive = false;
 let completionProvider: LLMCompletionProvider | undefined;
 let logUploader: LogUploader | undefined;
+let currentSubjectId: string = '';
+let currentAssignmentId: string = '';
+let currentSessionId: string = '';
 
 // Store original settings to restore on session end
 let originalQuickSuggestions: any;
@@ -29,6 +33,14 @@ export function activate(context: vscode.ExtensionContext) {
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
 
+  // Submit button (hidden by default)
+  submitButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+  submitButton.command = 'codeProcessLogger.submitCode';
+  submitButton.text = '$(cloud-upload) Submit Code';
+  submitButton.tooltip = 'Submit your code for analysis';
+  submitButton.hide();
+  context.subscriptions.push(submitButton);
+
   // Register commands
   context.subscriptions.push(
     vscode.commands.registerCommand('codeProcessLogger.startSession', () => startSession(context)),
@@ -39,6 +51,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('codeProcessLogger.insertCompletion', () => insertCompletion()),
     vscode.commands.registerCommand('codeProcessLogger.handleTab', () => handleTab()),
     vscode.commands.registerCommand('codeProcessLogger.openChatbot', () => ChatbotPanel.createOrShow(context.extensionUri)),
+    vscode.commands.registerCommand('codeProcessLogger.submitCode', () => submitCode()),
   );
 
   // Auto-start if configured
@@ -115,6 +128,12 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
   }) || 'default';
 
   const sessionId = `${subjectId}_${assignmentId}_${formatDate(new Date())}`;
+
+  // Save session info for submit functionality
+  currentSubjectId = subjectId;
+  currentAssignmentId = assignmentId;
+  currentSessionId = sessionId;
+  submitButton.show();
 
   // Initialize uploader (server only, no local files)
   const shortPauseMs = config.get<number>('shortPauseThreshold') || 1000;
@@ -196,6 +215,48 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
   // vscode.window.showInformationMessage(
   //   `Code logging started! Subject: ${subjectId}, Assignment: ${assignmentId}`
   // );
+}
+
+async function submitCode(): Promise<void> {
+  if (!isSessionActive) {
+    vscode.window.showWarningMessage('세션이 활성화되지 않았습니다. (No active session)');
+    return;
+  }
+
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showWarningMessage('열려있는 파일이 없습니다. (No file open)');
+    return;
+  }
+
+  const code = editor.document.getText();
+  const fileName = path.basename(editor.document.fileName);
+  const config = vscode.workspace.getConfiguration('codeProcessLogger');
+  const serverUrl = config.get<string>('serverUrl') || 'http://localhost:3000';
+
+  try {
+    vscode.window.showInformationMessage('코드 제출 중... (Submitting code...)');
+
+    const response = await serverRequest(serverUrl, '/api/submit', {
+      studentId: currentSubjectId,
+      assignmentId: currentAssignmentId,
+      sessionId: currentSessionId,
+      code,
+      fileName
+    });
+
+    if (response.success) {
+      const analysis = response.analysis;
+      vscode.window.showInformationMessage(
+        `✅ 코드 제출 완료! Blocks: ${analysis.totalBlocks}, KCs: ${analysis.kcs.join(', ')}, Complexity: ${analysis.complexity}`
+      );
+    } else {
+      vscode.window.showErrorMessage('코드 제출에 실패했습니다. (Submit failed)');
+    }
+  } catch (error: any) {
+    console.error('Submit error:', error);
+    vscode.window.showErrorMessage(`코드 제출 실패: ${error.message} (Submit failed: ${error.message})`);
+  }
 }
 
 async function handleTab(): Promise<void> {
@@ -311,6 +372,12 @@ async function stopSession(): Promise<void> {
   isSessionActive = false;
   vscode.commands.executeCommand('setContext', 'codeProcessLogger.sessionActive', false);
   updateStatusBar(false);
+
+  // Hide submit button and clear session info
+  submitButton.hide();
+  currentSubjectId = '';
+  currentAssignmentId = '';
+  currentSessionId = '';
 
   // vscode.window.showInformationMessage(`Code logging stopped. Logs saved to: ${outputDir}`);
 }
