@@ -337,5 +337,3 @@ MIT
 ---
 
 **Contact**: jungyang.park@example.com
-
-https://ai-ps.onrender.com

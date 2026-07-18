@@ -20,19 +20,19 @@ interface Student {
   lastLoginAt: string | null;
 }
 
-// Default KC levels - all start at Level 1
+// Default KC levels - all start at Level 2
 const DEFAULT_KC_LEVELS: Record<string, number> = {
-  'KC_001': 1, // conditional_logic
-  'KC_002': 1, // iteration
-  'KC_003': 1, // function_definition
-  'KC_004': 1, // list_manipulation
-  'KC_005': 1, // string_operation
-  'KC_006': 1, // arithmetic_operation
-  'KC_007': 1, // recursion
-  'KC_008': 1, // recursive_thinking
-  'KC_009': 1, // input_output
-  'KC_010': 1, // variable_assignment
-  'KC_011': 1, // boolean_logic
+  'KC_001': 2, // conditional_logic
+  'KC_002': 2, // iteration
+  'KC_003': 2, // function_definition
+  'KC_004': 2, // list_manipulation
+  'KC_005': 2, // string_operation
+  'KC_006': 2, // arithmetic_operation
+  'KC_007': 2, // recursion
+  'KC_008': 2, // recursive_thinking
+  'KC_009': 2, // input_output
+  'KC_010': 2, // variable_assignment
+  'KC_011': 2, // boolean_logic
 };
 
 function loadStudents(): Record<string, Student> {
@@ -209,6 +209,52 @@ studentsRouter.put('/:id/level', (req: Request, res: Response) => {
   students[id].level = level;
   saveStudents(students);
   res.json({ studentId: id, level });
+});
+
+// PUT /api/students/:id/kc-levels — update specific KC levels (for researcher)
+studentsRouter.put('/:id/kc-levels', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { kcLevels } = req.body as { kcLevels: Record<string, number> };
+
+  if (!kcLevels || typeof kcLevels !== 'object') {
+    res.status(400).json({ error: 'kcLevels object is required' });
+    return;
+  }
+
+  // Validate all levels are 1, 2, or 3
+  for (const [kc, level] of Object.entries(kcLevels)) {
+    if (level < 1 || level > 3) {
+      res.status(400).json({ error: `Level for ${kc} must be 1, 2, or 3` });
+      return;
+    }
+  }
+
+  const students = loadStudents();
+  if (!students[id]) {
+    res.status(404).json({ error: 'Student not found' });
+    return;
+  }
+
+  // Update only the provided KC levels
+  for (const [kc, level] of Object.entries(kcLevels)) {
+    students[id].kcLevels[kc] = level;
+  }
+
+  saveStudents(students);
+  res.json({ studentId: id, kcLevels: students[id].kcLevels });
+});
+
+// GET /api/students/:id/kc-levels — get current KC levels
+studentsRouter.get('/:id/kc-levels', (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const students = loadStudents();
+  if (!students[id]) {
+    res.status(404).json({ error: 'Student not found' });
+    return;
+  }
+
+  res.json({ studentId: id, kcLevels: students[id].kcLevels });
 });
 
 /**
