@@ -332,6 +332,15 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
                 console.log(`🎯 Block level set to: ${json.blockLevel}`);
               }
 
+              // Check if all blocks completed - clear cache so new context can trigger fresh completion
+              if (json.allBlocksCompleted) {
+                console.log(`🔵 [CLIENT] All blocks completed - clearing cache for new completion`);
+                this.shouldClearCache = true;
+                this.currentLineCompleted = false;
+                resolve(''); // Return empty to trigger new completion request
+                return;
+              }
+
               console.log(`🔵 [CLIENT] Completion: "${(json.completion || '').substring(0, 50)}"`);
               resolve(json.completion || null);
             } catch (e) {

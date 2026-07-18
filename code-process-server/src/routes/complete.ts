@@ -379,6 +379,11 @@ CRITICAL RULES - FOLLOW STRICTLY:
 4. NEVER output function definitions or code blocks that are already written
 5. Only output NEW code that logically continues from where the cursor is
 6. Include proper indentation that matches the context (analyze the code structure to determine correct indentation level)
+7. NEVER output duplicate lines - each line must be unique and appear only once in your output
+
+IMPORTANT: If the cursor is in the middle of a line (e.g., "if " is already typed),
+complete ONLY the rest of that line, then continue with new lines.
+DO NOT repeat the partial line that's already written.
 
 Code before cursor (DO NOT REPEAT THIS):
 \`\`\`${language}
