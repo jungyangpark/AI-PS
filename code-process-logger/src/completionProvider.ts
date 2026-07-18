@@ -11,12 +11,17 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
   private serverUrl: string;
   private enabled: boolean = false;
   private subjectId: string = '';
+  private assignmentId: string = '';
+  private sessionId: string = '';
   private level: number = 3;
 
   private cachedCompletion: string = '';
   private cachedPosition: vscode.Position | undefined;
   private isQuestionMode: boolean = false;
   private matchedChars: number = 0;
+  private currentLineCompleted: boolean = false; // Track if current line is fully typed (waiting for Enter)
+  private shouldRequestNextLine: boolean = false; // Track if we should request next line from server
+  private shouldClearCache: boolean = false; // Flag to clear cache on next request
 
   private disposables: vscode.Disposable[] = [];
   private onDisableCallback: (() => void) | undefined;
@@ -66,11 +71,17 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
 
     // Use current cursor position to display ghost (ignore cached position validation)
 
+    // Level 2: No autocomplete - never show ghost
+    if (this.level === 2) {
+      this.logToFile('provideInlineCompletionItems', { level2NoAutocomplete: true });
+      return undefined;
+    }
+
     // Calculate how much to show based on level and matched characters
     let displayCompletion = this.cachedCompletion;
 
     if (this.level === 1 || this.level === 3) {
-      // For Level 1 and 3: show remaining completion after matched chars
+      // For Level 1 & 3: show remaining completion after matched chars
       displayCompletion = this.cachedCompletion.substring(this.matchedChars);
     }
 
@@ -93,12 +104,14 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
   }
 
   async triggerCompletion(questionMode: boolean = false): Promise<void> {
+    console.log(`🔵 [CLIENT] triggerCompletion called: questionMode=${questionMode}, requestNextBlock=${this.shouldRequestNextLine}`);
     this.logToFile('triggerCompletion', { started: true, questionMode });
     this.isQuestionMode = questionMode;
 
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
       this.logToFile('triggerCompletion', { error: 'No active editor' });
+      console.log('🔵 [CLIENT] No active editor');
       return;
     }
 
@@ -116,7 +129,16 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       const completion = await this.fetchCompletion(prefix, suffix, language, fileName, cancellation.token, questionMode);
       if (completion && completion.trim().length > 0) {
         // Remove leading newline if present
-        const cleanedCompletion = completion.startsWith('\n') ? completion.substring(1) : completion;
+        let cleanedCompletion = completion.startsWith('\n') ? completion.substring(1) : completion;
+
+        // IMPORTANT: Only show first line (line-by-line mode)
+        // If server accidentally returns multiple lines, only use the first one
+        const firstLineEnd = cleanedCompletion.indexOf('\n');
+        if (firstLineEnd !== -1) {
+          cleanedCompletion = cleanedCompletion.substring(0, firstLineEnd);
+          console.log(`[COMP] Multiple lines received, showing only first line`);
+        }
+
         this.cachedCompletion = cleanedCompletion;
         this.cachedPosition = position;
         this.matchedChars = 0;
@@ -128,10 +150,14 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
           first200: cleanedCompletion.substring(0, 200)
         });
 
+        // DEBUG: Log exact completion received
+        console.log(`[COMP] Received: "${cleanedCompletion.replace(/\n/g, '\\n')}"`);
+
         // Set context variable to enable Tab keybinding
         vscode.commands.executeCommand('setContext', 'codeProcessLogger.hasCompletion', true);
 
         // Use InlineCompletionProvider (native ghost text, cleaner)
+        // Note: Level 2 won't show ghost (handled in provideInlineCompletionItems)
         await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
 
         this.logToFile('triggerCompletion', { ghostShown: true });
@@ -143,6 +169,18 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     } finally {
       cancellation.dispose();
     }
+  }
+
+  async requestNextLine(): Promise<void> {
+    console.log('🔵 [CLIENT] requestNextLine called');
+    this.logToFile('requestNextLine', { started: true });
+
+    // Set flag to request next line from server
+    this.shouldRequestNextLine = true;
+
+    // Trigger new completion (will request next line from server)
+    await this.triggerCompletion(false);
+    console.log('🔵 [CLIENT] requestNextLine completed');
   }
 
   private async showGhostTextDecoration(editor: vscode.TextEditor, position: vscode.Position, completion: string): Promise<void> {
@@ -235,20 +273,38 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     fileName: string,
     token: vscode.CancellationToken,
     questionMode: boolean = false,
+    retryCount: number = 0,
   ): Promise<string | null> {
     return new Promise((resolve) => {
+      const requestNextBlock = this.shouldRequestNextLine;
       const body = JSON.stringify({
         prefix: prefix.slice(-2000),  // 원래대로 복구
         suffix: suffix.slice(0, 500),  // 원래대로 복구
         language,
         fileName,
         subjectId: this.subjectId,
+        assignmentId: this.assignmentId,
+        sessionId: this.sessionId,
         questionMode,
+        requestNextBlock,
+        clearCache: this.shouldClearCache,
       });
+
+      console.log(`🔵 [CLIENT] Fetching completion: requestNextBlock=${requestNextBlock}`);
+
+      // Reset flags after building request body
+      if (this.shouldClearCache) {
+        this.shouldClearCache = false;
+      }
+      if (this.shouldRequestNextLine) {
+        this.shouldRequestNextLine = false;
+      }
 
       const url = new URL(`${this.serverUrl}/api/complete`);
       const isHttps = url.protocol === 'https:';
       const lib = isHttps ? https : http;
+
+      console.log(`🔵 [CLIENT] URL: ${url.href}, Protocol: ${url.protocol}, isHttps: ${isHttps}`);
 
       const req = lib.request(
         {
@@ -260,25 +316,57 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
             'Content-Type': 'application/json',
             'Content-Length': Buffer.byteLength(body),
           },
-          timeout: 5000,
+          timeout: 10000, // Increased to 10s for ngrok
         },
         (res) => {
           let data = '';
           res.on('data', (chunk) => { data += chunk; });
           res.on('end', () => {
             try {
+              console.log(`🔵 [CLIENT] Response received: ${data.substring(0, 200)}`);
               const json = JSON.parse(data);
+
+              // Update level if blockLevel is provided
+              if (json.blockLevel) {
+                this.setLevel(json.blockLevel);
+                console.log(`🎯 Block level set to: ${json.blockLevel}`);
+              }
+
+              console.log(`🔵 [CLIENT] Completion: "${(json.completion || '').substring(0, 50)}"`);
               resolve(json.completion || null);
-            } catch {
+            } catch (e) {
+              console.log(`🔵 [CLIENT] Parse error: ${e}`);
               resolve(null);
             }
           });
         },
       );
 
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
-      token.onCancellationRequested(() => { req.destroy(); resolve(null); });
+      req.on('error', (e) => {
+        console.log(`🔵 [CLIENT] Request error (attempt ${retryCount + 1}/3): ${e.message}`);
+
+        // Retry on TLS/network errors (max 3 attempts)
+        if (retryCount < 2 && (e.message.includes('TLS') || e.message.includes('socket') || e.message.includes('ECONNRESET'))) {
+          console.log(`🔵 [CLIENT] Retrying in ${(retryCount + 1) * 500}ms...`);
+          setTimeout(() => {
+            this.fetchCompletion(prefix, suffix, language, fileName, token, questionMode, retryCount + 1)
+              .then(resolve)
+              .catch(() => resolve(null));
+          }, (retryCount + 1) * 500); // 500ms, 1000ms delay
+        } else {
+          resolve(null);
+        }
+      });
+      req.on('timeout', () => {
+        console.log(`🔵 [CLIENT] Request timeout`);
+        req.destroy();
+        resolve(null);
+      });
+      token.onCancellationRequested(() => {
+        console.log(`🔵 [CLIENT] Request cancelled`);
+        req.destroy();
+        resolve(null);
+      });
 
       req.write(body);
       req.end();
@@ -297,6 +385,14 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
 
   setSubjectId(subjectId: string): void {
     this.subjectId = subjectId;
+  }
+
+  setAssignmentId(assignmentId: string): void {
+    this.assignmentId = assignmentId;
+  }
+
+  setSessionId(sessionId: string): void {
+    this.sessionId = sessionId;
   }
 
   setLevel(level: number): void {
@@ -327,11 +423,16 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     return this.matchedChars;
   }
 
-  async clearGhost(): Promise<void> {
+  async clearGhost(clearCache: boolean = false): Promise<void> {
     this.cachedCompletion = '';
     this.cachedPosition = undefined;
     this.matchedChars = 0;
     this.isQuestionMode = false;
+
+    // Set flag to clear cache if student typed different code
+    if (clearCache) {
+      this.shouldClearCache = true;
+    }
 
     // Clear context variable
     vscode.commands.executeCommand('setContext', 'codeProcessLogger.hasCompletion', false);
@@ -339,14 +440,16 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     // Hide inline suggestion
     await vscode.commands.executeCommand('editor.action.inlineSuggest.hide');
 
-    this.logToFile('clearGhost', { cleared: true });
+    this.logToFile('clearGhost', { cleared: true, clearCache });
   }
 
   async handleTabPress(): Promise<void> {
+    console.log(`🔵 [TAB] handleTabPress called, level=${this.level}, hasCompletion=${!!this.cachedCompletion}`);
     this.logToFile('handleTabPress', { level: this.level, hasCompletion: !!this.cachedCompletion });
 
     const editor = vscode.window.activeTextEditor;
     if (!editor || !this.cachedCompletion) {
+      console.log(`🔵 [TAB] No editor or completion, exiting`);
       return;
     }
 
@@ -357,9 +460,10 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       // Level 2: Tab does nothing special, just insert tab character
       await vscode.commands.executeCommand('tab');
     } else if (this.level === 3) {
-      // Level 3: Tab accepts the completion via InlineCompletion
+      // Level 3: Tab accepts the current line and requests next line
       const wasQuestionMode = this.isQuestionMode;
 
+      console.log(`🔵 [TAB] Level 3: accepting completion "${this.cachedCompletion}"`);
       this.logToFile('handleTabPress', {
         level: 3,
         matchedChars: this.matchedChars,
@@ -368,18 +472,20 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       });
 
       // Accept the inline suggestion
+      console.log(`🔵 [TAB] Committing inline suggestion...`);
       await vscode.commands.executeCommand('editor.action.inlineSuggest.commit');
 
       // Clear cached data
+      console.log(`🔵 [TAB] Clearing ghost...`);
       await this.clearGhost();
 
-      // Always disable autocomplete after accepting completion
-      this.enabled = false;
-      if (this.onDisableCallback) {
-        this.onDisableCallback();
-      }
+      // Tab accept: request next line immediately (don't wait for Enter)
+      console.log(`🔵 [TAB] Requesting next line...`);
+      this.logToFile('handleTabPress', { accepted: true, requestingNextLine: true });
 
-      this.logToFile('handleTabPress', { accepted: true, wasQuestionMode, disabled: true });
+      // Request next line (don't disable autocomplete)
+      await this.requestNextLine();
+      console.log(`🔵 [TAB] handleTabPress completed`);
     }
   }
 
@@ -407,26 +513,8 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
         // Level 1: Match character by character
         return this.handleLevel1Type(editor, char);
       } else if (this.level === 2) {
-        // Level 2: Always delete ghost text on any character input
-        if (char === '\n' || char === '\r') {
-          // Enter: keep ghost, just do normal newline
-          return vscode.commands.executeCommand('default:type', args);
-        } else if (char === '\t') {
-          // Tab in level 2: just normal tab
-          this.cachedCompletion = '';
-          this.cachedPosition = undefined;
-          this.matchedChars = 0;
-          vscode.commands.executeCommand('setContext', 'codeProcessLogger.hasCompletion', false);
-          return vscode.commands.executeCommand('default:type', args);
-        } else {
-          // Any other character: clear ghost, disable autocomplete, and type
-          await this.clearGhost();
-          this.enabled = false;
-          if (this.onDisableCallback) {
-            this.onDisableCallback();
-          }
-          return vscode.commands.executeCommand('default:type', args);
-        }
+        // Level 2: No autocomplete - normal typing
+        return vscode.commands.executeCommand('default:type', args);
       } else if (this.level === 3) {
         // Level 3: Match character by character (same as Level 1), but Tab accepts
         return this.handleLevel3Type(editor, char);
@@ -451,13 +539,13 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       // Check if this was a deletion (contentChanges with empty text)
       for (const change of e.contentChanges) {
         if (change.text === '' && change.rangeLength > 0) {
-          // Text was deleted - disable autocomplete
-          this.clearGhost();
+          // Text was deleted - clear cache and disable autocomplete
+          this.clearGhost(true); // Clear cache since student deleted text
           this.enabled = false;
           if (this.onDisableCallback) {
             this.onDisableCallback();
           }
-          this.logToFile('textDeleted', { disabledAutocomplete: true });
+          this.logToFile('textDeleted', { disabledAutocomplete: true, cacheCleared: true });
           break;
         }
       }
@@ -476,14 +564,16 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       // Type the character (may trigger auto-indent)
       await vscode.commands.executeCommand('default:type', { text: char });
 
-      // For Enter key, only match the newline character itself
-      // Auto-indent spaces will be handled separately
+      // For Enter key, check if line was completed and request next line
       if (char === '\n' || char === '\r') {
-        if (currentCompletion.startsWith('\n')) {
-          this.matchedChars += 1;
-        } else if (currentCompletion.startsWith('\r\n')) {
-          this.matchedChars += 2;
+        if (this.currentLineCompleted) {
+          // Line was completed, request next line
+          this.currentLineCompleted = false;
+          this.logToFile('handleLevel1Type', { enterPressed: true, requestingNextLine: true });
+          await this.requestNextLine();
         }
+        // If line not completed, just return - don't trigger new completion
+        return;
       } else if (char === '\t' || char === ' ') {
         // Tab or space - only match if it actually matches the completion
         // Skip auto-indent spaces by checking if completion expects this whitespace
@@ -491,12 +581,12 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
           this.matchedChars += char.length;
         }
         // If doesn't match, it's probably auto-indent, just skip it
-      }
 
-      this.cachedPosition = editor.selection.active;
-      await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
-      this.logToFile('handleLevel1Type', { whitespace: true, char: char === '\n' ? 'newline' : (char === '\t' ? 'tab' : (char === ' ' ? 'space' : 'return')) });
-      return;
+        this.cachedPosition = editor.selection.active;
+        await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+        this.logToFile('handleLevel1Type', { whitespace: true, char: char === '\t' ? 'tab' : 'space' });
+        return;
+      }
     }
 
     // Skip leading whitespace in completion (auto-indent mismatch)
@@ -508,14 +598,11 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       this.matchedChars += skippedWhitespace + char.length;
       await vscode.commands.executeCommand('default:type', { text: char });
 
-      // If no more completion left, clear everything and disable autocomplete
+      // If no more completion left, mark line as completed and wait for Enter
       if (this.matchedChars >= this.cachedCompletion.length) {
         await this.clearGhost();
-        this.enabled = false;
-        if (this.onDisableCallback) {
-          this.onDisableCallback();
-        }
-        this.logToFile('handleLevel1Type', { matched: true, completed: true, disabled: true });
+        this.currentLineCompleted = true;
+        this.logToFile('handleLevel1Type', { matched: true, currentLineCompleted: true, waitingForEnter: true });
       } else {
         // Update position and re-trigger inline suggestion
         this.cachedPosition = editor.selection.active;
@@ -523,14 +610,14 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
         this.logToFile('handleLevel1Type', { matched: true, remaining: this.cachedCompletion.length - this.matchedChars, skippedWhitespace });
       }
     } else {
-      // Doesn't match: clear ghost text, disable autocomplete, and type normally
-      await this.clearGhost();
+      // Doesn't match: clear ghost text, cache, disable autocomplete, and type normally
+      await this.clearGhost(true); // Clear cache since student typed different code
       this.enabled = false;
       if (this.onDisableCallback) {
         this.onDisableCallback();
       }
       await vscode.commands.executeCommand('default:type', { text: char });
-      this.logToFile('handleLevel1Type', { matched: false, cleared: true, disabled: true });
+      this.logToFile('handleLevel1Type', { matched: false, cleared: true, cacheCleared: true, disabled: true });
     }
   }
 
@@ -543,14 +630,17 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       // Type the character (may trigger auto-indent)
       await vscode.commands.executeCommand('default:type', { text: char });
 
-      // For Enter key, only match the newline character itself
-      // Auto-indent spaces will be handled separately
+      // For Enter key, check if line was completed and request next line
       if (char === '\n' || char === '\r') {
-        if (currentCompletion.startsWith('\n')) {
-          this.matchedChars += 1;
-        } else if (currentCompletion.startsWith('\r\n')) {
-          this.matchedChars += 2;
+        console.log(`[COMP] Enter key: currentLineCompleted=${this.currentLineCompleted}`);
+        if (this.currentLineCompleted) {
+          // Line was completed, request next line
+          this.currentLineCompleted = false;
+          this.logToFile('handleLevel3Type', { enterPressed: true, requestingNextLine: true });
+          await this.requestNextLine();
         }
+        // If line not completed, just return - don't trigger new completion
+        return;
       } else if (char === '\t' || char === ' ') {
         // Tab or space - only match if it actually matches the completion
         // Skip auto-indent spaces by checking if completion expects this whitespace
@@ -558,12 +648,12 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
           this.matchedChars += char.length;
         }
         // If doesn't match, it's probably auto-indent, just skip it
-      }
 
-      this.cachedPosition = editor.selection.active;
-      await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
-      this.logToFile('handleLevel3Type', { whitespace: true, char: char === '\n' ? 'newline' : (char === '\t' ? 'tab' : (char === ' ' ? 'space' : 'return')) });
-      return;
+        this.cachedPosition = editor.selection.active;
+        await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+        this.logToFile('handleLevel3Type', { whitespace: true, char: char === '\t' ? 'tab' : 'space' });
+        return;
+      }
     }
 
     // Skip leading whitespace in completion (auto-indent mismatch)
@@ -575,29 +665,29 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       this.matchedChars += skippedWhitespace + char.length;
       await vscode.commands.executeCommand('default:type', { text: char });
 
-      // If no more completion left, clear everything and disable autocomplete
+      // If no more completion left, mark line as completed and wait for Enter
       if (this.matchedChars >= this.cachedCompletion.length) {
         await this.clearGhost();
-        this.enabled = false;
-        if (this.onDisableCallback) {
-          this.onDisableCallback();
-        }
-        this.logToFile('handleLevel3Type', { matched: true, completed: true, disabled: true });
+        this.currentLineCompleted = true;
+        console.log(`[COMP] ✅ Line completed! matched=${this.matchedChars}/${this.cachedCompletion.length}`);
+        this.logToFile('handleLevel3Type', { matched: true, currentLineCompleted: true, waitingForEnter: true });
       } else {
         // Update position and re-trigger inline suggestion
         this.cachedPosition = editor.selection.active;
         await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+        console.log(`[COMP] 📝 Typing... matched=${this.matchedChars}/${this.cachedCompletion.length}, remaining="${this.cachedCompletion.substring(this.matchedChars)}"`);
         this.logToFile('handleLevel3Type', { matched: true, remaining: this.cachedCompletion.length - this.matchedChars, skippedWhitespace });
       }
     } else {
-      // Doesn't match: clear ghost text, disable autocomplete, and type normally
-      await this.clearGhost();
+      // Doesn't match: clear ghost text, cache, disable autocomplete, and type normally
+      console.log(`[COMP] ❌ Mismatch! Expected: "${trimmedCompletion.substring(0, 10)}", Got: "${char}"`);
+      await this.clearGhost(true); // Clear cache since student typed different code
       this.enabled = false;
       if (this.onDisableCallback) {
         this.onDisableCallback();
       }
       await vscode.commands.executeCommand('default:type', { text: char });
-      this.logToFile('handleLevel3Type', { matched: false, cleared: true, disabled: true });
+      this.logToFile('handleLevel3Type', { matched: false, cleared: true, cacheCleared: true, disabled: true });
     }
   }
 

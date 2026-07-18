@@ -12,12 +12,6 @@
     "editor.inlineSuggest.suppressSuggestions": false,
     "editor.formatOnPaste": false,
     "python.analysis.autoIndent": false,
-    "editor.acceptSuggestionOnCommitCharacter": false,
-    "editor.parameterHints.enabled": false,
-    "editor.inlineSuggest.enabled": true,
-    "editor.autoClosingBrackets": "never",
-    "editor.autoClosingQuotes": "never",
-    "editor.autoSurround": "never",
-    "editor.autoIndent": "none",
-    "editor.formatOnType": false
+    "editor.inlineSuggest.showToolbar": "never",
+    "editor.autoIndent": "none"
 }

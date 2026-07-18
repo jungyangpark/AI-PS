@@ -71,11 +71,36 @@ export function extractBlocks(ast: ASTNode): CodeBlock[] {
 }
 
 /**
- * Merge small blocks that belong together
- * For example: variable assignment followed by its usage
+ * Merge blocks with same Knowledge Components
+ * Consecutive blocks with identical KCs are merged into one block
  */
 export function mergeRelatedBlocks(blocks: CodeBlock[]): CodeBlock[] {
-  // Simple implementation: return as-is for now
-  // Can be enhanced later to merge related blocks
-  return blocks;
+  if (blocks.length === 0) return [];
+
+  const merged: CodeBlock[] = [];
+  let currentBlock = { ...blocks[0] };
+
+  for (let i = 1; i < blocks.length; i++) {
+    const nextBlock = blocks[i];
+
+    // Check if KCs are the same (compare KC IDs)
+    const currentKCs = currentBlock.kcs.map(kc => kc.id).sort().join(',');
+    const nextKCs = nextBlock.kcs.map(kc => kc.id).sort().join(',');
+
+    if (currentKCs === nextKCs && currentKCs !== '') {
+      // Same KCs: merge blocks
+      currentBlock.code += '\n' + nextBlock.code;
+      currentBlock.endLine = nextBlock.endLine;
+      // Type stays as the first block's type
+    } else {
+      // Different KCs: save current block and start new one
+      merged.push(currentBlock);
+      currentBlock = { ...nextBlock };
+    }
+  }
+
+  // Don't forget the last block
+  merged.push(currentBlock);
+
+  return merged;
 }

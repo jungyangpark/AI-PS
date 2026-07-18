@@ -2,10 +2,100 @@ import { Router, Request, Response } from 'express';
 import Anthropic from '@anthropic-ai/sdk';
 import * as fs from 'fs';
 import * as path from 'path';
+import { code2BlockAnalyzer, CodeBlock } from '../modules/code2block';
+
+const DATA_DIR = process.env.LOG_DIR || './logs';
+const STUDENTS_FILE = path.join(DATA_DIR, 'students.json');
+
+interface Student {
+  id: string;
+  passwordHash: string | null;
+  level: number;
+  kcLevels: Record<string, number>;
+  createdAt: string;
+  lastLoginAt: string | null;
+}
+
+function loadStudents(): Record<string, Student> {
+  if (fs.existsSync(STUDENTS_FILE)) {
+    return JSON.parse(fs.readFileSync(STUDENTS_FILE, 'utf-8'));
+  }
+  return {};
+}
+
+/**
+ * Determine block level based on student's KC proficiency
+ * Uses minimum level (weakest KC) to ensure practice on weak areas
+ */
+function determineBlockLevel(studentId: string, block: CodeBlock): number {
+  const students = loadStudents();
+  const student = students[studentId];
+
+  if (!student || !student.kcLevels) {
+    return 1; // Default to Level 1
+  }
+
+  if (block.kcs.length === 0) {
+    return 1; // No KCs, default to Level 1
+  }
+
+  // Get minimum level from all KCs in this block
+  const levels = block.kcs.map(kc => student.kcLevels[kc.id] || 1);
+  return Math.min(...levels);
+}
+
+/**
+ * Split semantic blocks into line-by-line blocks
+ * Each line inherits the KC information and type from its parent block
+ * Removes duplicate lines (same line number + same code content)
+ */
+function splitBlocksIntoLines(blocks: CodeBlock[]): CodeBlock[] {
+  const lineBlocks: CodeBlock[] = [];
+  const seenLines = new Map<number, string>(); // lineNumber -> code
+
+  blocks.forEach(block => {
+    const lines = block.code.split('\n');
+    lines.forEach((line, idx) => {
+      const actualLineNumber = block.startLine + idx;
+
+      // Skip if we've already seen this line number with the same code
+      if (seenLines.has(actualLineNumber)) {
+        const existingCode = seenLines.get(actualLineNumber);
+        if (existingCode?.trim() === line.trim()) {
+          return; // Skip duplicate
+        }
+      }
+
+      seenLines.set(actualLineNumber, line);
+      lineBlocks.push({
+        id: `L${lineBlocks.length}`,
+        code: line, // Keep original indentation - auto-indent will be disabled
+        type: block.type, // Inherit type from parent block
+        startLine: actualLineNumber,
+        endLine: actualLineNumber,
+        kcs: block.kcs // Inherit KC information from parent block
+      });
+    });
+  });
+
+  return lineBlocks;
+}
 
 export const completeRouter = Router();
 
 let client: Anthropic | null = null;
+
+// Block cache: sessionId -> block data
+interface BlockCacheEntry {
+  blocks: CodeBlock[];
+  currentIndex: number;
+  fullCode: string;
+  studentId: string;
+  assignmentId: string;
+  sessionId: string;
+}
+
+const blockCache = new Map<string, BlockCacheEntry>();
 
 function getClient(): Anthropic | null {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -28,12 +118,24 @@ interface CompleteRequest {
   fileName: string;
   // Subject ID for logging
   subjectId: string;
+  // Assignment ID
+  assignmentId?: string;
+  // Session ID
+  sessionId?: string;
   // Question mode (triggered by Shift+Escape)
   questionMode?: boolean;
+  // Request next block from cache
+  requestNextBlock?: boolean;
+  // Clear cache (student typed different code)
+  clearCache?: boolean;
 }
 
 completeRouter.post('/', async (req: Request, res: Response) => {
-  const { prefix, suffix, language, fileName, subjectId, questionMode } = req.body as CompleteRequest;
+  const {
+    prefix, suffix, language, fileName, subjectId, questionMode,
+    assignmentId, sessionId, requestNextBlock, clearCache
+  } = req.body as CompleteRequest;
+
 
   if (!prefix && !suffix) {
     res.json({ completion: '' });
@@ -46,48 +148,175 @@ completeRouter.post('/', async (req: Request, res: Response) => {
     return;
   }
 
+  const isQuestionMode = questionMode || false;
+
   try {
-    const prefixStr = JSON.stringify(prefix);
-    const suffixStr = JSON.stringify(suffix);
-    console.log('Request - prefix (last 1000):', prefixStr.slice(-1000), 'suffix:', suffixStr.substring(0, 100));
+    // Handle cache clearing (student typed different code)
+    if (clearCache && sessionId) {
+      blockCache.delete(sessionId);
+    }
 
-    // Use questionMode from request (triggered by Shift+Escape)
-    const isQuestionMode = questionMode || false;
-    const prompt = isQuestionMode
-      ? buildQuestionPrompt(prefix, suffix, language, fileName)
-      : buildPrompt(prefix, suffix, language, fileName);
+    // QUESTION MODE: Use existing non-cached flow
+    if (isQuestionMode) {
+      return await handleQuestionMode(req, res, anthropic, prefix, suffix, language, fileName, subjectId);
+    }
 
-    console.log('Mode:', isQuestionMode ? 'QUESTION' : 'AUTOCOMPLETE');
-    console.log('Prompt:', prompt);
+    // AUTOCOMPLETE MODE: Block-by-block caching
 
-    // Retry logic for overloaded errors
-    const maxTokens = isQuestionMode ? 256 : 512; // Allow longer completions for better code generation
+    // If requesting next block and cache exists
+    if (requestNextBlock && sessionId && blockCache.has(sessionId)) {
+      const cache = blockCache.get(sessionId)!;
+
+      // Move to next block
+      cache.currentIndex++;
+
+      if (cache.currentIndex >= cache.blocks.length) {
+        // No more lines
+        res.json({ completion: '', allBlocksCompleted: true });
+        return;
+      }
+
+      const nextLine = cache.blocks[cache.currentIndex];
+      const blockLevel = determineBlockLevel(subjectId, nextLine);
+      res.json({
+        completion: nextLine.code,
+        subjectId,
+        timestamp: new Date().toISOString(),
+        blockIndex: cache.currentIndex,
+        totalBlocks: cache.blocks.length,
+        blockLevel,
+      });
+      return;
+    }
+
+    // Check if cache exists for this session
+    if (sessionId && blockCache.has(sessionId) && !requestNextBlock) {
+      // Return current line (not moving index)
+      const cache = blockCache.get(sessionId)!;
+      const currentLine = cache.blocks[cache.currentIndex];
+      const blockLevel = determineBlockLevel(subjectId, currentLine);
+
+      res.json({
+        completion: currentLine.code,
+        subjectId,
+        timestamp: new Date().toISOString(),
+        blockIndex: cache.currentIndex,
+        totalBlocks: cache.blocks.length,
+        blockLevel,
+      });
+      return;
+    }
+
+    // No cache: Generate full solution from Claude
+    const prompt = buildPrompt(prefix, suffix, language, fileName);
+
+    const maxTokens = 512;
     const response = await retryWithBackoff(async () => {
       return await anthropic.messages.create({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: maxTokens,
         messages: [{ role: 'user', content: prompt }],
       });
-    }, 3); // max 3 attempts
+    }, 3);
 
-    console.log('LLM response:', JSON.stringify(response.content).substring(0, 200));
-    let completion = extractCompletion(response);
-    console.log('Completion before fix:', completion);
+    console.log('LLM response:', JSON.stringify(response.content));
+    let fullCompletion = extractCompletion(response);
+    console.log('Completion before fix:', fullCompletion);
 
     // Fix first line based on cursor context
-    completion = fixFirstLine(prefix, completion);
-    console.log('Completion after fix:', completion);
+    fullCompletion = fixFirstLine(prefix, fullCompletion);
+    console.log('Completion after fix:', fullCompletion);
 
-    res.json({
-      completion,
-      subjectId,
-      timestamp: new Date().toISOString(),
-    });
+    // Analyze with Code2Block
+    // Parse full code (prefix + completion) for valid AST, but filter blocks from completion only
+    const fullCode = prefix + fullCompletion;
+    const prefixLineCount = prefix.split('\n').length;
+
+    const fullAnalysis = await code2BlockAnalyzer.analyze(fullCode);
+
+    // Filter blocks that belong to the completion (startLine >= prefixLineCount)
+    const completionBlocks = fullAnalysis.blocks.filter(block => block.startLine >= prefixLineCount);
+
+    const analysis = {
+      blocks: completionBlocks,
+      summary: {
+        totalBlocks: completionBlocks.length,
+        kcs: [...new Set(completionBlocks.flatMap(b => b.kcs.map(kc => kc.name)))],
+        complexity: fullAnalysis.summary.complexity
+      }
+    };
+
+    // Split semantic blocks into line-by-line blocks
+    const lineBlocks = splitBlocksIntoLines(completionBlocks);
+
+    // Store in cache if sessionId provided
+    if (sessionId && assignmentId && lineBlocks.length > 0) {
+      blockCache.set(sessionId, {
+        blocks: lineBlocks,
+        currentIndex: 0,
+        fullCode: fullCompletion,
+        studentId: subjectId,
+        assignmentId,
+        sessionId,
+      });
+
+      // Return first line
+      const firstLine = lineBlocks[0];
+      const blockLevel = determineBlockLevel(subjectId, firstLine);
+
+      res.json({
+        completion: firstLine.code,
+        subjectId,
+        timestamp: new Date().toISOString(),
+        blockIndex: 0,
+        totalBlocks: lineBlocks.length,
+        blockLevel,
+      });
+    } else {
+      // No sessionId: return full completion (fallback)
+      res.json({
+        completion: fullCompletion,
+        subjectId,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
   } catch (error: any) {
     console.error('LLM completion error:', error.message, error.status, error.error);
     res.status(500).json({ error: 'Completion failed' });
   }
 });
+
+// Helper: Handle question mode (non-cached)
+async function handleQuestionMode(
+  req: Request,
+  res: Response,
+  anthropic: Anthropic,
+  prefix: string,
+  suffix: string,
+  language: string,
+  fileName: string,
+  subjectId: string
+) {
+  const prompt = buildQuestionPrompt(prefix, suffix, language, fileName);
+
+  const response = await retryWithBackoff(async () => {
+    return await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 256,
+      messages: [{ role: 'user', content: prompt }],
+    });
+  }, 3);
+
+  let completion = extractCompletion(response);
+  completion = fixFirstLine(prefix, completion);
+
+  res.json({
+    completion,
+    subjectId,
+    timestamp: new Date().toISOString(),
+  });
+}
 
 /**
  * Build prompt for question-answering mode (triggered by Shift+Escape)
@@ -186,7 +415,6 @@ function extractCompletion(response: Anthropic.Message): string {
       const index = text.indexOf(marker);
       if (index !== -1) {
         text = text.substring(0, index);
-        console.log(`Trimmed explanation after: "${marker}"`);
       }
     }
 
@@ -224,15 +452,12 @@ function extractCompletion(response: Anthropic.Message): string {
     const firstPart = lowerText.substring(0, 150);
     for (const phrase of metaPhrases) {
       if (firstPart.includes(phrase)) {
-        console.log(`Filtered out meta-commentary containing: "${phrase}"`);
         return '';  // Return empty if LLM is explaining instead of coding
       }
     }
 
     // If response starts with explanatory text (sentences), reject it
     if (/^[A-Z][a-z\s]{10,}/.test(text)) {
-      // Starts with capitalized sentence-like text
-      console.log('Filtered out sentence-like response');
       return '';
     }
 
@@ -298,7 +523,6 @@ async function retryWithBackoff<T>(
 
       // Exponential backoff: 1s, 2s, 4s...
       const delay = initialDelay * Math.pow(2, attempt - 1);
-      console.log(`API overloaded (attempt ${attempt}/${maxAttempts}), retrying in ${delay}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }

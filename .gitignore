@@ -36,3 +36,7 @@ pre-test/
 extract_*.py
 assignment*.py
 temp.py
+
+.claude/
+.vscode/
+prep_meeting/

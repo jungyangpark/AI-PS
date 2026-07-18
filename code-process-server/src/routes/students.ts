@@ -11,14 +11,57 @@ const STUDENTS_FILE = path.join(DATA_DIR, 'students.json');
 interface Student {
   id: string;
   passwordHash: string | null;  // null = first login, needs to set password
-  level: number;                // 1, 2, or 3
+  level: number;                // 1, 2, or 3 (deprecated, kept for backward compatibility)
+  kcLevels: Record<string, number>; // KC_ID -> level (1/2/3)
   createdAt: string;
   lastLoginAt: string | null;
 }
 
+// Default KC levels - all start at Level 1
+const DEFAULT_KC_LEVELS: Record<string, number> = {
+  'KC_001': 1, // conditional_logic
+  'KC_002': 1, // iteration
+  'KC_003': 1, // function_definition
+  'KC_004': 1, // list_manipulation
+  'KC_005': 1, // string_operation
+  'KC_006': 1, // arithmetic_operation
+  'KC_007': 1, // recursion
+  'KC_008': 1, // recursive_thinking
+  'KC_009': 1, // input_output
+  'KC_010': 1, // variable_assignment
+  'KC_011': 1, // boolean_logic
+};
+
 function loadStudents(): Record<string, Student> {
   if (fs.existsSync(STUDENTS_FILE)) {
-    return JSON.parse(fs.readFileSync(STUDENTS_FILE, 'utf-8'));
+    const students = JSON.parse(fs.readFileSync(STUDENTS_FILE, 'utf-8'));
+
+    // Migrate old students without kcLevels
+    for (const id in students) {
+      if (!students[id].kcLevels) {
+        students[id].kcLevels = { ...DEFAULT_KC_LEVELS };
+      }
+
+      // Test accounts: unify all KC levels
+      if (id.includes('lv1') || id === 'test_lv1') {
+        // Level 1 for all KCs
+        for (const kc in students[id].kcLevels) {
+          students[id].kcLevels[kc] = 1;
+        }
+      } else if (id.includes('lv2') || id === 'test_lv2') {
+        // Level 2 for all KCs
+        for (const kc in students[id].kcLevels) {
+          students[id].kcLevels[kc] = 2;
+        }
+      } else if (id.includes('lv3') || id === 'test_lv3') {
+        // Level 3 for all KCs
+        for (const kc in students[id].kcLevels) {
+          students[id].kcLevels[kc] = 3;
+        }
+      }
+    }
+
+    return students;
   }
   return {};
 }
@@ -49,10 +92,29 @@ studentsRouter.post('/register', (req: Request, res: Response) => {
     if (students[id]) {
       alreadyExists.push(id);
     } else {
+      const kcLevels = { ...DEFAULT_KC_LEVELS };
+
+      // Test accounts: unify all KC levels
+      let unifiedLevel: number | undefined;
+      if (id.includes('lv1') || id === 'test_lv1') {
+        unifiedLevel = 1;
+      } else if (id.includes('lv2') || id === 'test_lv2') {
+        unifiedLevel = 2;
+      } else if (id.includes('lv3') || id === 'test_lv3') {
+        unifiedLevel = 3;
+      }
+
+      if (unifiedLevel) {
+        for (const kc in kcLevels) {
+          kcLevels[kc] = unifiedLevel;
+        }
+      }
+
       students[id] = {
         id,
         passwordHash: null,
         level: level || 1,
+        kcLevels,
         createdAt: new Date().toISOString(),
         lastLoginAt: null,
       };
@@ -90,6 +152,7 @@ studentsRouter.post('/login', (req: Request, res: Response) => {
       status: 'password_set',
       studentId: student.id,
       level: student.level,
+      kcLevels: student.kcLevels,
       message: 'Password set successfully. Welcome!',
     });
     return;
@@ -107,6 +170,7 @@ studentsRouter.post('/login', (req: Request, res: Response) => {
     status: 'ok',
     studentId: student.id,
     level: student.level,
+    kcLevels: student.kcLevels,
   });
 });
 

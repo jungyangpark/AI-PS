@@ -24,6 +24,8 @@ let originalQuickSuggestions: any;
 let originalSuggestOnTriggerCharacters: boolean | undefined;
 let originalWordBasedSuggestions: string | undefined;
 let originalInlineSuggest: boolean | undefined;
+let originalAutoIndent: string | undefined;
+let originalInlineSuggestShowToolbar: string | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
   // Status bar item
@@ -152,6 +154,8 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
   // Initialize LLM completion provider with student's level
   completionProvider = new LLMCompletionProvider(serverUrl);
   completionProvider.setSubjectId(subjectId);
+  completionProvider.setAssignmentId(assignmentId);
+  completionProvider.setSessionId(sessionId);
   completionProvider.setLevel(studentLevel);
   completionProvider.setEnabled(false);
   completionProvider.registerTabHandler();
@@ -166,10 +170,16 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
 
   editTracker = new EditTracker(writer, subjectId, assignmentId, shortPauseMs, midPauseMs, {
     enable: async () => {
-      if (completionProvider && !completionProvider.isEnabled()) {
-        completionProvider.setEnabled(true);
-        completionProvider.triggerCompletion(false); // false = autocomplete mode
-        updateStatusBar(true, true, 'autocomplete');
+      if (completionProvider) {
+        if (!completionProvider.isEnabled()) {
+          completionProvider.setEnabled(true);
+          updateStatusBar(true, true, 'autocomplete');
+        }
+        // Level 2: No autocomplete - don't trigger completion
+        // Level 1 & 3: Always trigger completion on pause (even if already enabled)
+        if (completionProvider.getLevel() !== 2) {
+          await completionProvider.triggerCompletion(false);
+        }
       }
       // vscode.window.showInformationMessage('자동완성이 켜졌습니다! (Autocomplete enabled)');
     },
@@ -211,6 +221,16 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
   isSessionActive = true;
   vscode.commands.executeCommand('setContext', 'codeProcessLogger.sessionActive', true);
   updateStatusBar(true);
+
+  // Save and disable auto-indent during session - server provides exact indentation
+  originalAutoIndent = editorConfig.get<string>('autoIndent');
+  await editorConfig.update('autoIndent', 'none', false);
+  console.log(`Auto-indent: saved '${originalAutoIndent}', set to 'none'`);
+
+  // Save and hide inline suggestion toolbar during session
+  originalInlineSuggestShowToolbar = editorConfig.get<string>('inlineSuggest.showToolbar');
+  await editorConfig.update('inlineSuggest.showToolbar', 'never', false);
+  console.log(`Inline suggestion toolbar: saved '${originalInlineSuggestShowToolbar}', set to 'never'`);
 
   // vscode.window.showInformationMessage(
   //   `Code logging started! Subject: ${subjectId}, Assignment: ${assignmentId}`
@@ -345,6 +365,21 @@ async function stopSession(): Promise<void> {
   // Restore external autocomplete settings
   await restoreExternalAutocomplete();
 
+  // Restore auto-indent to original setting
+  const editorConfig = vscode.workspace.getConfiguration('editor');
+  if (originalAutoIndent !== undefined) {
+    await editorConfig.update('autoIndent', originalAutoIndent, false);
+    console.log(`Auto-indent restored to '${originalAutoIndent}'`);
+    originalAutoIndent = undefined;
+  }
+
+  // Restore inline suggestion toolbar to original setting
+  if (originalInlineSuggestShowToolbar !== undefined) {
+    await editorConfig.update('inlineSuggest.showToolbar', originalInlineSuggestShowToolbar, false);
+    console.log(`Inline suggestion toolbar restored to '${originalInlineSuggestShowToolbar}'`);
+    originalInlineSuggestShowToolbar = undefined;
+  }
+
   // Clean up completion provider
   if (completionProvider) {
     completionProvider.dispose();
@@ -421,26 +456,18 @@ async function setAssignmentId(context: vscode.ExtensionContext): Promise<void> 
 let currentLevel: number = 0;
 
 function updateStatusBar(active: boolean, autocompleteOn?: boolean, mode?: 'question' | 'autocomplete'): void {
-  const levelTag = currentLevel ? ` [Lv${currentLevel}]` : '';
-  if (active && autocompleteOn) {
-    const modeText = mode === 'question' ? 'Question Mode' : 'Autocomplete ON';
-    const icon = mode === 'question' ? '$(question)' : '$(lightbulb)';
-    statusBarItem.text = `${icon} AI-PS: ${modeText}${levelTag}`;
+  if (active) {
+    // Session active: simple status
+    statusBarItem.text = '$(check) AI-PS: Active';
     statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.prominentBackground');
     statusBarItem.command = 'codeProcessLogger.stopSession';
-    statusBarItem.tooltip = mode === 'question'
-      ? 'Question mode active — press Tab to accept answer'
-      : 'Autocomplete is enabled — type to disable it again';
-  } else if (active) {
-    statusBarItem.text = `$(record) AI-PS: Recording${levelTag}`;
-    statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-    statusBarItem.command = 'codeProcessLogger.stopSession';
-    statusBarItem.tooltip = 'Click to stop logging';
+    statusBarItem.tooltip = 'Session active — Click to stop';
   } else {
+    // Session inactive
     statusBarItem.text = '$(circle-outline) AI-PS: Idle';
     statusBarItem.backgroundColor = undefined;
     statusBarItem.command = 'codeProcessLogger.startSession';
-    statusBarItem.tooltip = 'Click to start logging';
+    statusBarItem.tooltip = 'Click to start session';
   }
 }
 

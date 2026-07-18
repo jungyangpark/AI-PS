@@ -68,7 +68,7 @@
         },
         "codeProcessLogger.midPauseThreshold": {
           "type": "number",
-          "default": 10000,
+          "default": 2000,
           "description": "Milliseconds of inactivity before enabling autocomplete"
         },
         "codeProcessLogger.longPauseThreshold": {
@@ -78,7 +78,7 @@
         },
         "codeProcessLogger.serverUrl": {
           "type": "string",
-          "default": "https://stingray-finalize-skydiver.ngrok-free.dev",
+          "default": "https://ai-ps.onrender.com",
           "description": "URL of the backend server for LLM autocomplete and log collection"
         },
         "codeProcessLogger.autoStart": {
