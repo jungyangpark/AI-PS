@@ -3,7 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { completeRouter } from './routes/complete';
 import { logsRouter } from './routes/logs';
-import { studentsRouter } from './routes/students';
+import { studentsRouter, initializeDefaultStudents } from './routes/students';
 import { debugRouter } from './routes/debug';
 import chatRouter from './routes/chat';
 import submitRouter from './routes/submit';
@@ -38,6 +38,9 @@ app.use('/api/chat', chatRouter);
 
 // Submit endpoint
 app.use('/api/submit', submitRouter);
+
+// Initialize default test students on startup
+initializeDefaultStudents();
 
 app.listen(PORT, () => {
   console.log(`Code Process Server running on port ${PORT}`);

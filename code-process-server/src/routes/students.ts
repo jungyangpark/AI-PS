@@ -8,6 +8,9 @@ export const studentsRouter = Router();
 const DATA_DIR = process.env.LOG_DIR || './logs';
 const STUDENTS_FILE = path.join(DATA_DIR, 'students.json');
 
+// Default test students to auto-register on server start
+const DEFAULT_STUDENTS = ['test_lv1', 'test_lv2', 'test_lv3'];
+
 interface Student {
   id: string;
   passwordHash: string | null;  // null = first login, needs to set password
@@ -207,3 +210,49 @@ studentsRouter.put('/:id/level', (req: Request, res: Response) => {
   saveStudents(students);
   res.json({ studentId: id, level });
 });
+
+/**
+ * Initialize default test students on server startup
+ * Called from index.ts when server starts
+ */
+export function initializeDefaultStudents(): void {
+  const students = loadStudents();
+  let registered = 0;
+
+  for (const id of DEFAULT_STUDENTS) {
+    if (!students[id]) {
+      const kcLevels = { ...DEFAULT_KC_LEVELS };
+
+      // Test accounts: unify all KC levels based on ID
+      let unifiedLevel: number | undefined;
+      if (id.includes('lv1') || id === 'test_lv1') {
+        unifiedLevel = 1;
+      } else if (id.includes('lv2') || id === 'test_lv2') {
+        unifiedLevel = 2;
+      } else if (id.includes('lv3') || id === 'test_lv3') {
+        unifiedLevel = 3;
+      }
+
+      if (unifiedLevel) {
+        for (const kc in kcLevels) {
+          kcLevels[kc] = unifiedLevel;
+        }
+      }
+
+      students[id] = {
+        id,
+        passwordHash: null,
+        level: unifiedLevel || 1,
+        kcLevels,
+        createdAt: new Date().toISOString(),
+        lastLoginAt: null,
+      };
+      registered++;
+    }
+  }
+
+  if (registered > 0) {
+    saveStudents(students);
+    console.log(`✅ Auto-registered ${registered} default students: ${DEFAULT_STUDENTS.join(', ')}`);
+  }
+}

@@ -215,6 +215,24 @@ npm run dev
 
 서버는 기본적으로 `http://localhost:3000`에서 실행됩니다.
 
+**자동 학생 등록**: 서버 시작 시 기본 테스트 학생(`test_lv1`, `test_lv2`, `test_lv3`)이 자동으로 등록됩니다.
+
+**추가 학생 등록** (필요 시):
+```bash
+# 단일 학생 등록
+curl -X POST http://localhost:3000/api/students/register \
+  -H "Content-Type: application/json" \
+  -d '{"studentIds": ["student_001"]}'
+
+# 여러 학생 등록
+curl -X POST http://localhost:3000/api/students/register \
+  -H "Content-Type: application/json" \
+  -d '{"studentIds": ["student_001", "student_002", "test_lv1_alice"]}'
+
+# 학생 목록 확인
+curl http://localhost:3000/api/students
+```
+
 ### 2. Extension 설치
 
 ```bash
