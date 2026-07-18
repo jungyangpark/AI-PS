@@ -47,26 +47,29 @@ function determineBlockLevel(studentId: string, block: CodeBlock): number {
 /**
  * Split semantic blocks into line-by-line blocks
  * Each line inherits the KC information and type from its parent block
- * Removes duplicate lines (same line number + same code content)
+ * Removes duplicate lines based on code content (prevents "if s == 1:" appearing twice)
  */
 function splitBlocksIntoLines(blocks: CodeBlock[]): CodeBlock[] {
   const lineBlocks: CodeBlock[] = [];
-  const seenLines = new Map<number, string>(); // lineNumber -> code
+  const seenCodeContent = new Set<string>(); // Track code content to prevent duplicates
 
   blocks.forEach(block => {
     const lines = block.code.split('\n');
     lines.forEach((line, idx) => {
       const actualLineNumber = block.startLine + idx;
+      const trimmedCode = line.trim();
 
-      // Skip if we've already seen this line number with the same code
-      if (seenLines.has(actualLineNumber)) {
-        const existingCode = seenLines.get(actualLineNumber);
-        if (existingCode?.trim() === line.trim()) {
-          return; // Skip duplicate
-        }
+      // Skip empty lines
+      if (trimmedCode === '') {
+        return;
       }
 
-      seenLines.set(actualLineNumber, line);
+      // Skip if we've already seen this exact code content
+      if (seenCodeContent.has(trimmedCode)) {
+        return; // Skip duplicate
+      }
+
+      seenCodeContent.add(trimmedCode);
       lineBlocks.push({
         id: `L${lineBlocks.length}`,
         code: line, // Keep original indentation - auto-indent will be disabled
