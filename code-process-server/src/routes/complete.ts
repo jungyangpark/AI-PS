@@ -495,10 +495,9 @@ function fixFirstLine(prefix: string, completion: string): string {
     return restLines ? `\n${firstLineOutput}\n${restLines}` : `\n${firstLineOutput}`;
   }
 
-  // Case 3: last_line has only spaces
-  // first_line_output = remove LEADING spaces only
-  firstLineOutput = firstLineOutput.trimStart();
-  return restLines ? `${firstLineOutput}\n${restLines}` : firstLineOutput;
+  // Case 3: last_line has only spaces (cursor is already indented)
+  // Keep the completion as-is, preserving indentation
+  return completion;
 }
 
 async function retryWithBackoff<T>(
