@@ -26,6 +26,7 @@ function loadStudents(): Record<string, Student> {
 /**
  * Determine block level based on student's KC proficiency
  * Uses minimum level (weakest KC) to ensure practice on weak areas
+ * For blocks without KCs (e.g., fallback), use student's global level
  */
 function determineBlockLevel(studentId: string, block: CodeBlock): number {
   const students = loadStudents();
@@ -36,7 +37,12 @@ function determineBlockLevel(studentId: string, block: CodeBlock): number {
   }
 
   if (block.kcs.length === 0) {
-    return 1; // No KCs, default to Level 1
+    // No KCs (e.g., fallback parsing) - use student's global level
+    // For test accounts (lv1/lv2/lv3), all KC levels are unified
+    // So we can use any KC level as the global level
+    const globalLevel = student.level || Object.values(student.kcLevels)[0] || 1;
+    console.log(`📌 Block has no KCs - using student global level: ${globalLevel}`);
+    return globalLevel;
   }
 
   // Get minimum level from all KCs in this block
@@ -235,22 +241,32 @@ completeRouter.post('/', async (req: Request, res: Response) => {
     const fullCode = prefix + fullCompletion;
     const prefixLineCount = prefix.split('\n').length;
 
+    // Analyze with Code2Block
     const fullAnalysis = await code2BlockAnalyzer.analyze(fullCode);
 
     // Filter blocks that belong to the completion (startLine >= prefixLineCount)
     const completionBlocks = fullAnalysis.blocks.filter(block => block.startLine >= prefixLineCount);
 
-    const analysis = {
-      blocks: completionBlocks,
-      summary: {
-        totalBlocks: completionBlocks.length,
-        kcs: [...new Set(completionBlocks.flatMap(b => b.kcs.map(kc => kc.name)))],
-        complexity: fullAnalysis.summary.complexity
-      }
-    };
+    let lineBlocks: CodeBlock[] = [];
 
-    // Split semantic blocks into line-by-line blocks
-    const lineBlocks = splitBlocksIntoLines(completionBlocks);
+    // If parsing failed (no blocks extracted), fallback to simple line-by-line split
+    if (completionBlocks.length === 0) {
+      console.log('⚠️ Code2Block parsing returned no blocks (likely invalid syntax)');
+      console.log('📝 Falling back to simple line-by-line split without KC analysis');
+
+      const lines = fullCompletion.split('\n').filter(line => line.trim() !== '');
+      lineBlocks = lines.map((line, idx) => ({
+        id: `L${idx}`,
+        code: line,
+        type: 'Unknown' as any,
+        startLine: prefixLineCount + idx,
+        endLine: prefixLineCount + idx,
+        kcs: [] // No KC information available for unparseable code
+      }));
+    } else {
+      // Normal case: blocks were successfully extracted
+      lineBlocks = splitBlocksIntoLines(completionBlocks);
+    }
 
     // Store in cache if sessionId provided
     if (sessionId && assignmentId && lineBlocks.length > 0) {
