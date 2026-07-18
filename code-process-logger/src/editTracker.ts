@@ -219,9 +219,12 @@ export class EditTracker implements vscode.Disposable {
 
     // Mid pause timer: trigger autocomplete only if not already enabled
     if (!this.autocompleteEnabled) {
+      console.log('[EDIT] Setting midPauseTimer (autocomplete currently disabled)');
       this.midPauseTimer = setTimeout(() => {
         this.onMidPause();
       }, this.midPauseMs);
+    } else {
+      console.log('[EDIT] Skipping midPauseTimer (autocomplete already enabled)');
     }
 
   }
@@ -292,6 +295,7 @@ export class EditTracker implements vscode.Disposable {
    * Called after mid pause (e.g. 2s) — trigger autocomplete to provide new completion
    */
   private async onMidPause(): Promise<void> {
+    console.log('[EDIT] onMidPause triggered - enabling autocomplete');
     if (this.autocompleteCallbacks) {
       this.autocompleteEnabled = true;
 
@@ -344,6 +348,7 @@ export class EditTracker implements vscode.Disposable {
    * Called when completionProvider disables autocomplete due to mismatch
    */
   resetAutocompleteState(): void {
+    console.log('[EDIT] resetAutocompleteState called - autocomplete will be re-enabled after mid pause');
     this.autocompleteEnabled = false;
   }
 
