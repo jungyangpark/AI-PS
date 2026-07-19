@@ -321,14 +321,13 @@ ngrok http 3000
    "codeProcessLogger.serverUrl": "https://abc123.ngrok.io"
    ```
 
-## 🔬 향후 개발 계획
-
-- [ ] Autocompletion code에도 Code2Block 분석 적용
-- [ ] ProgSnap2 로그와 Block 매칭 자동화
-- [ ] KC별 proficiency 계산 알고리즘 구현
-- [ ] 학생 대시보드 (진도, 취약 KC 시각화)
-- [ ] 적응형 레벨 조정 (proficiency 기반 자동 Level 변경)
-- [ ] 문제 추천 시스템 (취약 KC 중심)
+## TODO
+│ - [ ] **LEVEL 3 - Case 2: Handle indent-only lines in autocomplete**                                             │
+│   - When autocomplete is triggered on a line with only indentation (e.g., "        "), remove leading  │
+│ spaces from the completion before displaying                                                           │
+│   - Expected behavior: User on indent-only line → Server returns indented code → Client strips indent  │
+│ → User sees code without duplicate indentation                                                         │
+│   - Current status: Indent is not being removed, causing double indentation                            │
 
 ## 📄 License
 

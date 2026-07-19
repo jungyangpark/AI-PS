@@ -233,6 +233,10 @@ completeRouter.post('/', async (req: Request, res: Response) => {
     console.log('Completion before fix:', fullCompletion);
 
     // Fix first line based on cursor context
+    const prefixLines = prefix.split('\n');
+    const lastLine = prefixLines[prefixLines.length - 1];
+    console.log('📝 Full prefix:', prefix);
+    console.log('Prefix last line:', JSON.stringify(lastLine));
     fullCompletion = fixFirstLine(prefix, fullCompletion);
     console.log('Completion after fix:', fullCompletion);
 
@@ -503,24 +507,17 @@ function fixFirstLine(prefix: string, completion: string): string {
   const prefixLines = prefix.split('\n');
   const lastLine = prefixLines[prefixLines.length - 1];
 
-  let firstLineOutput = lines[0];
-  const restLines = lines.slice(1).join('\n');
-
-  // Case 1: last_line is empty
-  if (lastLine === '') {
-    // first_line_output = first_line_output (keep as-is)
-    return completion;
+  // If prefix last line has only spaces (indent only, not completely empty), remove leading spaces from first line
+  // Example: lastLine = "        " (8 spaces), completion = "        return [...]"
+  // → Remove leading spaces to avoid double indent
+  if (lastLine !== '' && lastLine.trim() === '') {
+    // Cursor is at indent-only line - remove leading spaces from first line only
+    const firstLineWithoutSpaces = lines[0].trimStart();
+    const restLines = lines.slice(1).join('\n');
+    return restLines ? `${firstLineWithoutSpaces}\n${restLines}` : firstLineWithoutSpaces;
   }
 
-  // Case 2: last_line includes words except spaces
-  const hasNonSpaceChars = lastLine.trim().length > 0;
-  if (hasNonSpaceChars) {
-    // first_line_output = "\n" + first_line_output
-    return restLines ? `\n${firstLineOutput}\n${restLines}` : `\n${firstLineOutput}`;
-  }
-
-  // Case 3: last_line has only spaces (cursor is already indented)
-  // Keep the completion as-is, preserving indentation
+  // If prefix last line has code, keep completion as-is
   return completion;
 }
 
