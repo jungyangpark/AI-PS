@@ -22,6 +22,7 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
   private currentLineCompleted: boolean = false; // Track if current line is fully typed (waiting for Enter)
   private shouldRequestNextLine: boolean = false; // Track if we should request next line from server
   private shouldClearCache: boolean = false; // Flag to clear cache on next request
+  private waitingForEnterAfterLevel2: boolean = false; // Level 2: wait for Enter before re-enabling
 
   private disposables: vscode.Disposable[] = [];
   private onDisableCallback: (() => void) | undefined;
@@ -348,6 +349,21 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
                 console.log(`🎯 Block level set to: ${json.blockLevel}`);
               }
 
+              // Check if Level 2 - disable autocomplete (student types on their own)
+              if (json.disableAutocomplete) {
+                console.log(`⚠️ [CLIENT] Level 2 detected - disabling autocomplete, waiting for Enter`);
+                this.setEnabled(false);
+                this.waitingForEnterAfterLevel2 = true; // Prevent re-enable until Enter
+
+                // Notify EditTracker to reset state (will re-enable after idle, but we'll block it)
+                if (this.onDisableCallback) {
+                  this.onDisableCallback();
+                }
+
+                resolve(''); // Return empty to prevent ghost text
+                return;
+              }
+
               // Check if all blocks completed - disable autocomplete to trigger fresh request after idle
               if (json.allBlocksCompleted) {
                 console.log(`🔵 [CLIENT] All blocks completed - disabling autocomplete for new context`);
@@ -411,6 +427,13 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
 
   // Public API
   setEnabled(enabled: boolean): void {
+    // Block re-enabling if waiting for Enter after Level 2
+    if (enabled && this.waitingForEnterAfterLevel2) {
+      console.log(`🚫 [CLIENT] Blocked autocomplete re-enable - waiting for Enter after Level 2`);
+      this.logToFile('setEnabled', { enabled, blocked: true, reason: 'waitingForEnterAfterLevel2' });
+      return;
+    }
+
     this.enabled = enabled;
     if (!enabled) {
       this.cachedCompletion = '';
@@ -532,8 +555,23 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
         enabled: this.enabled,
         hasCompletion: !!this.cachedCompletion,
         currentLineCompleted: this.currentLineCompleted,
+        waitingForEnterAfterLevel2: this.waitingForEnterAfterLevel2,
         level: this.level
       });
+
+      // Special case: Level 2 Enter detection
+      const char = args.text;
+      if (this.waitingForEnterAfterLevel2 && (char === '\n' || char === '\r')) {
+        console.log(`✅ [CLIENT] Enter after Level 2 - requesting next line`);
+        this.waitingForEnterAfterLevel2 = false;
+
+        // Type the Enter key
+        await vscode.commands.executeCommand('default:type', args);
+
+        // Request next line from cache
+        await this.requestNextLine();
+        return;
+      }
 
       // Handle typing if: enabled AND (has completion OR waiting for Enter after Tab accept)
       if (!this.enabled || (!this.cachedCompletion && !this.currentLineCompleted) || !editor) {
@@ -541,8 +579,7 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
         return vscode.commands.executeCommand('default:type', args);
       }
 
-      // Ghost text is showing
-      const char = args.text;
+      // Ghost text is showing (char already defined above)
 
       if (this.level === 1) {
         // Level 1: Match character by character

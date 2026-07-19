@@ -175,11 +175,8 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
           completionProvider.setEnabled(true);
           updateStatusBar(true, true, 'autocomplete');
         }
-        // Level 2: No autocomplete - don't trigger completion
-        // Level 1 & 3: Always trigger completion on pause (even if already enabled)
-        if (completionProvider.getLevel() !== 2) {
-          await completionProvider.triggerCompletion(false);
-        }
+        // Always trigger completion - server will return disableAutocomplete flag if Level 2
+        await completionProvider.triggerCompletion(false);
       }
       // vscode.window.showInformationMessage('자동완성이 켜졌습니다! (Autocomplete enabled)');
     },

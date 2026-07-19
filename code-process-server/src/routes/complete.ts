@@ -187,6 +187,21 @@ completeRouter.post('/', async (req: Request, res: Response) => {
 
       const nextLine = cache.blocks[cache.currentIndex];
       const blockLevel = determineBlockLevel(subjectId, nextLine);
+
+      // Log KC info for each line
+      const kcInfo = nextLine.kcs.length > 0
+        ? nextLine.kcs.map(kc => `${kc.name}(${kc.id})`).join(', ')
+        : 'No KCs';
+      console.log(`✅ [ACCEPT] Line ${cache.currentIndex + 1}/${cache.blocks.length}: "${nextLine.code.trim()}"`);
+      console.log(`   KCs: ${kcInfo}`);
+      console.log(`   Level: ${blockLevel} (Student: ${subjectId})`);
+
+      // If Level 2, signal client to disable autocomplete
+      const shouldDisable = blockLevel === 2;
+      if (shouldDisable) {
+        console.log(`   ⚠️ Level 2 detected - client will disable autocomplete`);
+      }
+
       res.json({
         completion: nextLine.code,
         subjectId,
@@ -194,6 +209,7 @@ completeRouter.post('/', async (req: Request, res: Response) => {
         blockIndex: cache.currentIndex,
         totalBlocks: cache.blocks.length,
         blockLevel,
+        disableAutocomplete: shouldDisable,
       });
       return;
     }
@@ -205,6 +221,20 @@ completeRouter.post('/', async (req: Request, res: Response) => {
       const currentLine = cache.blocks[cache.currentIndex];
       const blockLevel = determineBlockLevel(subjectId, currentLine);
 
+      // Log KC info for current line (cache hit)
+      const kcInfo = currentLine.kcs.length > 0
+        ? currentLine.kcs.map(kc => `${kc.name}(${kc.id})`).join(', ')
+        : 'No KCs';
+      console.log(`🔄 [CACHE] Line ${cache.currentIndex + 1}/${cache.blocks.length}: "${currentLine.code.trim()}"`);
+      console.log(`   KCs: ${kcInfo}`);
+      console.log(`   Level: ${blockLevel} (Student: ${subjectId})`);
+
+      // If Level 2, signal client to disable autocomplete
+      const shouldDisable = blockLevel === 2;
+      if (shouldDisable) {
+        console.log(`   ⚠️ Level 2 detected - client will disable autocomplete`);
+      }
+
       res.json({
         completion: currentLine.code,
         subjectId,
@@ -212,6 +242,7 @@ completeRouter.post('/', async (req: Request, res: Response) => {
         blockIndex: cache.currentIndex,
         totalBlocks: cache.blocks.length,
         blockLevel,
+        disableAutocomplete: shouldDisable,
       });
       return;
     }
@@ -287,6 +318,20 @@ completeRouter.post('/', async (req: Request, res: Response) => {
       const firstLine = lineBlocks[0];
       const blockLevel = determineBlockLevel(subjectId, firstLine);
 
+      // Log KC info for first line (new generation)
+      const kcInfo = firstLine.kcs.length > 0
+        ? firstLine.kcs.map(kc => `${kc.name}(${kc.id})`).join(', ')
+        : 'No KCs';
+      console.log(`🆕 [NEW] Line 1/${lineBlocks.length}: "${firstLine.code.trim()}"`);
+      console.log(`   KCs: ${kcInfo}`);
+      console.log(`   Level: ${blockLevel} (Student: ${subjectId})`);
+
+      // If Level 2, signal client to disable autocomplete
+      const shouldDisable = blockLevel === 2;
+      if (shouldDisable) {
+        console.log(`   ⚠️ Level 2 detected - client will disable autocomplete`);
+      }
+
       res.json({
         completion: firstLine.code,
         subjectId,
@@ -294,6 +339,7 @@ completeRouter.post('/', async (req: Request, res: Response) => {
         blockIndex: 0,
         totalBlocks: lineBlocks.length,
         blockLevel,
+        disableAutocomplete: shouldDisable,
       });
     } else {
       // No sessionId: return full completion (fallback)
