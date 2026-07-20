@@ -1,5 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { code2BlockAnalyzer } from '../modules/code2block';
+import { evaluateCode } from '../modules/codeEvaluator';
+import { loadAssignmentConfig } from '../modules/assignmentConfig';
+import { updateStudentModel } from '../modules/studentEvaluation';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -15,7 +18,7 @@ interface SubmitRequest {
 
 /**
  * POST /api/submit
- * Submit student's completed code for analysis
+ * Submit student's completed code for evaluation and analysis
  */
 router.post('/', async (req: Request, res: Response) => {
   try {
@@ -29,8 +32,56 @@ router.post('/', async (req: Request, res: Response) => {
 
     console.log(`📝 Submission from ${studentId} for ${assignmentId}`);
 
-    // Analyze code with Code2Block
-    const analysis = await code2BlockAnalyzer.analyze(code);
+    // Load assignment configuration
+    const assignmentConfig = loadAssignmentConfig(assignmentId);
+
+    if (!assignmentConfig) {
+      return res.status(404).json({
+        success: false,
+        message: 'Wrong',
+        reason: `Assignment ${assignmentId} not found. Please contact instructor.`
+      });
+    }
+
+    // Step 1: Evaluate code (grammar, unit tests, complexity)
+    console.log(`🔍 Evaluating code...`);
+    const evaluation = await evaluateCode(code, assignmentConfig);
+
+    // Initialize response data
+    let analysis: any = null;
+    let studentModel: any = null;
+
+    // Step 2: If evaluation passed, run Code2Block analysis
+    if (evaluation.success) {
+      console.log(`✅ Code evaluation passed!`);
+      console.log(`📊 Running Code2Block analysis...`);
+
+      analysis = await code2BlockAnalyzer.analyze(code);
+
+      console.log(`   Blocks: ${analysis.blocks.length}`);
+      console.log(`   KCs: ${analysis.summary.kcs.join(', ')}`);
+
+      // Step 3: Update student model
+      console.log(`👤 Updating student model...`);
+      studentModel = updateStudentModel(
+        studentId,
+        assignmentConfig.kcs,
+        true,
+        analysis.blocks
+      );
+
+      console.log(`   Total submissions: ${studentModel.totalSubmissions}`);
+      console.log(`   Successful: ${studentModel.successfulSubmissions}`);
+    } else {
+      console.log(`❌ Code evaluation failed: ${evaluation.reason}`);
+
+      // Update student model with failed attempt
+      studentModel = updateStudentModel(
+        studentId,
+        assignmentConfig.kcs,
+        false
+      );
+    }
 
     // Prepare submission record
     const submissionRecord = {
@@ -40,9 +91,26 @@ router.post('/', async (req: Request, res: Response) => {
       timestamp: new Date().toISOString(),
       fileName: fileName || 'unknown.py',
       code,
-      analysis: {
+      evaluation: {
+        success: evaluation.success,
+        message: evaluation.message,
+        reason: evaluation.reason,
+        grammarCheck: evaluation.grammarCheck,
+        unitTestResult: evaluation.unitTestResult,
+        complexityValidation: evaluation.complexityValidation
+      },
+      analysis: analysis ? {
         blocks: analysis.blocks,
         summary: analysis.summary
+      } : null,
+      studentModel: {
+        totalSubmissions: studentModel.totalSubmissions,
+        successfulSubmissions: studentModel.successfulSubmissions,
+        relevantKCLevels: Object.fromEntries(
+          Object.entries(studentModel.kcLevels).filter(([kc]) =>
+            assignmentConfig.kcs.includes(kc)
+          )
+        )
       }
     };
 
@@ -67,26 +135,35 @@ router.post('/', async (req: Request, res: Response) => {
       'utf-8'
     );
 
-    console.log(`✅ Submission saved: ${submissionFile}`);
-    console.log(`   Blocks: ${analysis.blocks.length}`);
-    console.log(`   KCs: ${analysis.summary.kcs.join(', ')}`);
-    console.log(`   Complexity: ${analysis.summary.complexity}`);
+    console.log(`💾 Submission saved: ${submissionFile}`);
 
+    // Return response
     res.json({
-      success: true,
-      message: 'Code submitted successfully',
-      analysis: {
+      success: evaluation.success,
+      message: evaluation.message,
+      reason: evaluation.reason,
+      analysis: analysis ? {
         totalBlocks: analysis.summary.totalBlocks,
         kcs: analysis.summary.kcs,
         complexity: analysis.summary.complexity
-      }
+      } : null,
+      studentLevel: studentModel ? {
+        totalSubmissions: studentModel.totalSubmissions,
+        successfulSubmissions: studentModel.successfulSubmissions,
+        kcLevels: Object.fromEntries(
+          Object.entries(studentModel.kcLevels).filter(([kc]) =>
+            assignmentConfig.kcs.includes(kc)
+          )
+        )
+      } : null
     });
 
   } catch (error: any) {
     console.error('Submit error:', error);
     res.status(500).json({
-      error: 'Failed to process submission',
-      details: error.message
+      success: false,
+      message: 'Wrong',
+      reason: `Server error: ${error.message}`
     });
   }
 });

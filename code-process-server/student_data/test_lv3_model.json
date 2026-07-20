@@ -1,0 +1,43 @@
+{
+  "studentId": "test_lv3",
+  "kcLevels": {
+    "binary_search": {
+      "kc": "binary_search",
+      "level": 0,
+      "attempts": 1,
+      "successes": 0,
+      "lastUpdated": "2026-07-20T04:01:04.240Z"
+    },
+    "divide_and_conquer": {
+      "kc": "divide_and_conquer",
+      "level": 0.22791206896551724,
+      "attempts": 30,
+      "successes": 9,
+      "lastUpdated": "2026-07-20T12:51:28.161Z"
+    },
+    "array_manipulation": {
+      "kc": "array_manipulation",
+      "level": 0,
+      "attempts": 1,
+      "successes": 0,
+      "lastUpdated": "2026-07-20T04:01:04.240Z"
+    },
+    "recursion": {
+      "kc": "recursion",
+      "level": 0.23532785987958402,
+      "attempts": 29,
+      "successes": 9,
+      "lastUpdated": "2026-07-20T12:51:28.161Z"
+    },
+    "pattern_generation": {
+      "kc": "pattern_generation",
+      "level": 0,
+      "attempts": 7,
+      "successes": 0,
+      "lastUpdated": "2026-07-20T08:22:23.844Z"
+    }
+  },
+  "totalSubmissions": 30,
+  "successfulSubmissions": 9,
+  "lastActivity": "2026-07-20T12:51:28.161Z"
+}

@@ -343,6 +343,20 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
               console.log(`🔵 [CLIENT] Response received: ${data.substring(0, 200)}`);
               const json = JSON.parse(data);
 
+              // Check if parsing failed - disable autocomplete permanently
+              if (json.error === 'PARSING_FAILED') {
+                console.log(`🚫 [CLIENT] Parsing failed - disabling autocomplete due to syntax errors`);
+                this.setEnabled(false);
+
+                // Notify EditTracker to disable as well
+                if (this.onDisableCallback) {
+                  this.onDisableCallback();
+                }
+
+                resolve(''); // Return empty to prevent ghost text
+                return;
+              }
+
               // Update level if blockLevel is provided
               if (json.blockLevel) {
                 this.setLevel(json.blockLevel);

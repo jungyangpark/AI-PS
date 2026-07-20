@@ -284,24 +284,21 @@ completeRouter.post('/', async (req: Request, res: Response) => {
 
     let lineBlocks: CodeBlock[] = [];
 
-    // If parsing failed (no blocks extracted), fallback to simple line-by-line split
+    // If parsing failed (no blocks extracted), return error to disable autocomplete
     if (completionBlocks.length === 0) {
       console.log('⚠️ Code2Block parsing returned no blocks (likely invalid syntax)');
-      console.log('📝 Falling back to simple line-by-line split without KC analysis');
+      console.log('🚫 Disabling autocomplete due to parsing failure');
 
-      const lines = fullCompletion.split('\n').filter(line => line.trim() !== '');
-      lineBlocks = lines.map((line, idx) => ({
-        id: `L${idx}`,
-        code: line,
-        type: 'Unknown' as any,
-        startLine: prefixLineCount + idx,
-        endLine: prefixLineCount + idx,
-        kcs: [] // No KC information available for unparseable code
-      }));
-    } else {
-      // Normal case: blocks were successfully extracted
-      lineBlocks = splitBlocksIntoLines(completionBlocks);
+      return res.json({
+        success: false,
+        error: 'PARSING_FAILED',
+        message: 'Code contains syntax errors. Autocomplete disabled.',
+        completion: ''
+      });
     }
+
+    // Normal case: blocks were successfully extracted
+    lineBlocks = splitBlocksIntoLines(completionBlocks);
 
     // Store in cache if sessionId provided
     if (sessionId && assignmentId && lineBlocks.length > 0) {

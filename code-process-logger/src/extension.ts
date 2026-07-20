@@ -12,6 +12,7 @@ let writer: ProgSnap2Writer | undefined;
 let editTracker: EditTracker | undefined;
 let statusBarItem: vscode.StatusBarItem;
 let submitButton: vscode.StatusBarItem;
+let assignmentButton: vscode.StatusBarItem;
 let isSessionActive = false;
 let completionProvider: LLMCompletionProvider | undefined;
 let logUploader: LogUploader | undefined;
@@ -42,6 +43,14 @@ export function activate(context: vscode.ExtensionContext) {
   submitButton.tooltip = 'Submit your code for analysis';
   submitButton.hide();
   context.subscriptions.push(submitButton);
+
+  // Assignment button (hidden by default)
+  assignmentButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+  assignmentButton.command = 'codeProcessLogger.setAssignmentId';
+  assignmentButton.text = '$(file-code) Assignment: None';
+  assignmentButton.tooltip = 'Click to change assignment ID';
+  assignmentButton.hide();
+  context.subscriptions.push(assignmentButton);
 
   // Register commands
   context.subscriptions.push(
@@ -136,6 +145,8 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
   currentAssignmentId = assignmentId;
   currentSessionId = sessionId;
   submitButton.show();
+  assignmentButton.text = `$(file-code) Assignment: ${assignmentId}`;
+  assignmentButton.show();
 
   // Initialize uploader (server only, no local files)
   const shortPauseMs = config.get<number>('shortPauseThreshold') || 1000;
@@ -240,6 +251,12 @@ async function submitCode(): Promise<void> {
     return;
   }
 
+  // Check if assignment is set
+  if (!currentAssignmentId || currentAssignmentId === '-') {
+    vscode.window.showWarningMessage('Assignment ID를 먼저 설정하세요. (Please set Assignment ID first)');
+    return;
+  }
+
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     vscode.window.showWarningMessage('열려있는 파일이 없습니다. (No file open)');
@@ -251,29 +268,78 @@ async function submitCode(): Promise<void> {
   const config = vscode.workspace.getConfiguration('codeProcessLogger');
   const serverUrl = config.get<string>('serverUrl') || 'http://localhost:3000';
 
-  try {
-    vscode.window.showInformationMessage('코드 제출 중... (Submitting code...)');
+  // Show evaluation progress with progress notification
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Evaluating your code...",
+      cancellable: false
+    },
+    async (progress) => {
+      try {
+        progress.report({ message: "Checking syntax and running tests..." });
 
-    const response = await serverRequest(serverUrl, '/api/submit', {
-      studentId: currentSubjectId,
-      assignmentId: currentAssignmentId,
-      sessionId: currentSessionId,
-      code,
-      fileName
-    });
+        const response = await serverRequest(serverUrl, '/api/submit', {
+          studentId: currentSubjectId,
+          assignmentId: currentAssignmentId,
+          sessionId: currentSessionId,
+          code,
+          fileName
+        });
 
-    if (response.success) {
-      const analysis = response.analysis;
-      vscode.window.showInformationMessage(
-        `✅ 코드 제출 완료! Blocks: ${analysis.totalBlocks}, KCs: ${analysis.kcs.join(', ')}, Complexity: ${analysis.complexity}`
-      );
-    } else {
-      vscode.window.showErrorMessage('코드 제출에 실패했습니다. (Submit failed)');
+        // Evaluation complete - show result in modal
+        if (response.success) {
+          // Success case: Show "Correct!" only
+          await vscode.window.showInformationMessage('✅ Correct!', { modal: true }, 'OK');
+
+          // Reset assignment ID to "-" after successful submission
+          currentAssignmentId = '-';
+          assignmentButton.text = '$(file-code) Assignment: -';
+
+          // Update EditTracker and CompletionProvider
+          if (editTracker) {
+            editTracker.updateAssignmentId('-');
+          }
+          if (completionProvider) {
+            completionProvider.setAssignmentId('-');
+          }
+
+        } else {
+          // Failure case: Show error type only (no details)
+          const reason = response.reason || 'Wrong Answer';
+          const message = `❌ ${reason}`;
+
+          await vscode.window.showErrorMessage(message, { modal: true }, 'OK');
+        }
+
+        // Disable autocomplete after submission (success or failure)
+        if (completionProvider) {
+          completionProvider.setEnabled(false);
+          await completionProvider.clearGhost();
+          updateStatusBar(true, false);
+        }
+        // Reset EditTracker's autocomplete state so it can be re-enabled after 2s
+        if (editTracker) {
+          editTracker.resetAutocompleteState();
+        }
+
+      } catch (error: any) {
+        console.error('Submit error:', error);
+        await vscode.window.showErrorMessage('❌ Runtime Error', { modal: true }, 'OK');
+
+        // Disable autocomplete even on error
+        if (completionProvider) {
+          completionProvider.setEnabled(false);
+          await completionProvider.clearGhost();
+          updateStatusBar(true, false);
+        }
+        // Reset EditTracker's autocomplete state
+        if (editTracker) {
+          editTracker.resetAutocompleteState();
+        }
+      }
     }
-  } catch (error: any) {
-    console.error('Submit error:', error);
-    vscode.window.showErrorMessage(`코드 제출 실패: ${error.message} (Submit failed: ${error.message})`);
-  }
+  );
 }
 
 async function handleTab(): Promise<void> {
@@ -405,8 +471,9 @@ async function stopSession(): Promise<void> {
   vscode.commands.executeCommand('setContext', 'codeProcessLogger.sessionActive', false);
   updateStatusBar(false);
 
-  // Hide submit button and clear session info
+  // Hide submit button and assignment button, clear session info
   submitButton.hide();
+  assignmentButton.hide();
   currentSubjectId = '';
   currentAssignmentId = '';
   currentSessionId = '';
@@ -446,7 +513,15 @@ async function setAssignmentId(context: vscode.ExtensionContext): Promise<void> 
   }
 
   // Simply update assignment ID without changing level or creating new session
+  currentAssignmentId = newId;
   editTracker.updateAssignmentId(newId);
+
+  // Update completion provider's assignment ID
+  if (completionProvider) {
+    completionProvider.setAssignmentId(newId);
+  }
+
+  assignmentButton.text = `$(file-code) Assignment: ${newId}`;
   vscode.window.showInformationMessage(`Assignment ID updated to: ${newId}`);
 }
 
@@ -563,7 +638,7 @@ function serverRequest(serverUrl: string, apiPath: string, body: any, method: st
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(data),
         },
-        timeout: 10000,
+        timeout: 600000, // 10 minutes for code evaluation
       },
       (res) => {
         let responseData = '';

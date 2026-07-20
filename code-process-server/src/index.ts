@@ -7,6 +7,7 @@ import { studentsRouter, initializeDefaultStudents } from './routes/students';
 import { debugRouter } from './routes/debug';
 import chatRouter from './routes/chat';
 import submitRouter from './routes/submit';
+import assignmentsRouter from './routes/assignments';
 
 dotenv.config();
 
@@ -39,9 +40,19 @@ app.use('/api/chat', chatRouter);
 // Submit endpoint
 app.use('/api/submit', submitRouter);
 
+// Assignment management
+app.use('/api/assignments', assignmentsRouter);
+
 // Initialize default test students on startup
 initializeDefaultStudents();
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Code Process Server running on port ${PORT}`);
 });
+
+// Set server timeout to 10 minutes for code evaluation
+server.timeout = 300000; // 5 minutes
+server.keepAliveTimeout = 610000; // slightly longer than timeout
+server.headersTimeout = 620000; // slightly longer than keepAliveTimeout
+
+console.log(`Server timeout set to ${server.timeout}ms (10 minutes)`);

@@ -38,5 +38,6 @@ assignment*.py
 temp.py
 
 .claude/
+CLAUDE.md
 .vscode/
 prep_meeting/

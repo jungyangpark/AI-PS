@@ -89,7 +89,7 @@ export class LogUploader {
             'Content-Type': 'application/json',
             'Content-Length': Buffer.byteLength(data),
           },
-          timeout: 10000,
+          timeout: 600000, // 10 minutes for code evaluation
         },
         (res) => {
           let responseData = '';

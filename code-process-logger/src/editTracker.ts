@@ -295,6 +295,12 @@ export class EditTracker implements vscode.Disposable {
    * Called after mid pause (e.g. 2s) — trigger autocomplete to provide new completion
    */
   private async onMidPause(): Promise<void> {
+    // Don't enable autocomplete if no assignment is set
+    if (!this.assignmentId || this.assignmentId === '-') {
+      console.log('[EDIT] onMidPause - autocomplete blocked (no assignment set)');
+      return;
+    }
+
     console.log('[EDIT] onMidPause triggered - enabling autocomplete');
     if (this.autocompleteCallbacks) {
       this.autocompleteEnabled = true;
