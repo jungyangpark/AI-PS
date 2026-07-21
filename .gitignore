@@ -36,6 +36,7 @@ pre-test/
 extract_*.py
 assignment*.py
 temp.py
+practice/
 
 .claude/
 CLAUDE.md

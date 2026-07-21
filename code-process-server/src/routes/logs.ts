@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
+const archiver = require('archiver');
 
 export const logsRouter = Router();
 
@@ -115,6 +116,99 @@ logsRouter.get('/sessions/:subjectId', (req: Request, res: Response) => {
   });
 
   res.json({ sessions });
+});
+
+// Download entire session as ZIP
+logsRouter.get('/download/:subjectId/:sessionId', (req: Request, res: Response) => {
+  const { subjectId, sessionId } = req.params;
+  const sessionDir = path.join(LOG_DIR, subjectId, sessionId);
+
+  if (!fs.existsSync(sessionDir)) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  try {
+    const archive = archiver('zip', {
+      zlib: { level: 9 } // Maximum compression
+    });
+
+    // Set response headers
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${subjectId}_${sessionId}.zip"`);
+
+    // Handle errors
+    archive.on('error', (err: Error) => {
+      console.error('Archive error:', err);
+      res.status(500).json({ error: 'Failed to create archive' });
+    });
+
+    // Pipe archive to response
+    archive.pipe(res);
+
+    // Add session directory to archive
+    archive.directory(sessionDir, false);
+
+    // Finalize archive
+    archive.finalize();
+
+  } catch (error: any) {
+    console.error('Download error:', error.message);
+    res.status(500).json({ error: 'Failed to download session logs' });
+  }
+});
+
+// Download all logs for a subject (all sessions)
+logsRouter.get('/download/:subjectId', (req: Request, res: Response) => {
+  const { subjectId } = req.params;
+  const subjectDir = path.join(LOG_DIR, subjectId);
+
+  if (!fs.existsSync(subjectDir)) {
+    res.status(404).json({ error: 'Subject not found' });
+    return;
+  }
+
+  try {
+    const archive = archiver('zip', {
+      zlib: { level: 9 }
+    });
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${subjectId}_all_sessions.zip"`);
+
+    archive.on('error', (err: Error) => {
+      console.error('Archive error:', err);
+      res.status(500).json({ error: 'Failed to create archive' });
+    });
+
+    archive.pipe(res);
+    archive.directory(subjectDir, subjectId);
+    archive.finalize();
+
+  } catch (error: any) {
+    console.error('Download error:', error.message);
+    res.status(500).json({ error: 'Failed to download subject logs' });
+  }
+});
+
+// List all subjects
+logsRouter.get('/subjects', (req: Request, res: Response) => {
+  if (!fs.existsSync(LOG_DIR)) {
+    res.json({ subjects: [] });
+    return;
+  }
+
+  try {
+    const subjects = fs.readdirSync(LOG_DIR).filter(f => {
+      const fullPath = path.join(LOG_DIR, f);
+      return fs.statSync(fullPath).isDirectory();
+    });
+
+    res.json({ subjects });
+  } catch (error: any) {
+    console.error('List subjects error:', error.message);
+    res.status(500).json({ error: 'Failed to list subjects' });
+  }
 });
 
 function escapeCSV(value: any): string {
