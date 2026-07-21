@@ -176,42 +176,65 @@ completeRouter.post('/', async (req: Request, res: Response) => {
     if (requestNextBlock && sessionId && blockCache.has(sessionId)) {
       const cache = blockCache.get(sessionId)!;
 
-      // Move to next block
-      cache.currentIndex++;
+      // ✅ Level 2 validation: Check if student's typed code matches cached recommendation
+      const currentCachedLine = cache.blocks[cache.currentIndex];
+      const expectedCode = currentCachedLine.code.trim();
 
-      if (cache.currentIndex >= cache.blocks.length) {
-        // No more lines
-        res.json({ completion: '', allBlocksCompleted: true });
+      // Extract last non-empty line from prefix (student's actual typed code)
+      const prefixLines = prefix.trim().split('\n').filter(line => line.trim().length > 0);
+      const lastLineFromPrefix = prefixLines[prefixLines.length - 1]?.trim() || '';
+
+      // Compare student's code with cached recommendation
+      if (lastLineFromPrefix !== expectedCode) {
+        console.log(`🔄 [MISMATCH] Level 2 validation failed`);
+        console.log(`   Expected: "${expectedCode}"`);
+        console.log(`   Student typed: "${lastLineFromPrefix}"`);
+        console.log(`   → Clearing cache and regenerating recommendations`);
+
+        // Clear cache and regenerate from scratch
+        blockCache.delete(sessionId);
+        // Fall through to normal generation below (will create new cache)
+      } else {
+        // ✅ Match! Student typed the recommended code correctly
+
+        // Move to next block
+        cache.currentIndex++;
+
+        if (cache.currentIndex >= cache.blocks.length) {
+          // No more lines
+          res.json({ completion: '', allBlocksCompleted: true });
+          return;
+        }
+
+        const nextLine = cache.blocks[cache.currentIndex];
+        const blockLevel = determineBlockLevel(subjectId, nextLine);
+
+        // Log KC info for each line
+        const kcInfo = nextLine.kcs.length > 0
+          ? nextLine.kcs.map(kc => `${kc.name}(${kc.id})`).join(', ')
+          : 'No KCs';
+        console.log(`✅ [ACCEPT] Line ${cache.currentIndex + 1}/${cache.blocks.length}: "${nextLine.code.trim()}"`);
+        console.log(`   KCs: ${kcInfo}`);
+        console.log(`   Level: ${blockLevel} (Student: ${subjectId})`);
+
+        // If Level 2, signal client to disable autocomplete
+        const shouldDisable = blockLevel === 2;
+        if (shouldDisable) {
+          console.log(`   ⚠️ Level 2 detected - client will disable autocomplete`);
+        }
+
+        res.json({
+          completion: nextLine.code,
+          subjectId,
+          timestamp: new Date().toISOString(),
+          blockIndex: cache.currentIndex,
+          totalBlocks: cache.blocks.length,
+          blockLevel,
+          disableAutocomplete: shouldDisable,
+        });
         return;
       }
-
-      const nextLine = cache.blocks[cache.currentIndex];
-      const blockLevel = determineBlockLevel(subjectId, nextLine);
-
-      // Log KC info for each line
-      const kcInfo = nextLine.kcs.length > 0
-        ? nextLine.kcs.map(kc => `${kc.name}(${kc.id})`).join(', ')
-        : 'No KCs';
-      console.log(`✅ [ACCEPT] Line ${cache.currentIndex + 1}/${cache.blocks.length}: "${nextLine.code.trim()}"`);
-      console.log(`   KCs: ${kcInfo}`);
-      console.log(`   Level: ${blockLevel} (Student: ${subjectId})`);
-
-      // If Level 2, signal client to disable autocomplete
-      const shouldDisable = blockLevel === 2;
-      if (shouldDisable) {
-        console.log(`   ⚠️ Level 2 detected - client will disable autocomplete`);
-      }
-
-      res.json({
-        completion: nextLine.code,
-        subjectId,
-        timestamp: new Date().toISOString(),
-        blockIndex: cache.currentIndex,
-        totalBlocks: cache.blocks.length,
-        blockLevel,
-        disableAutocomplete: shouldDisable,
-      });
-      return;
+      // If mismatch, cache was deleted and we fall through to regeneration below
     }
 
     // Check if cache exists for this session

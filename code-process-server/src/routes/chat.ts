@@ -32,13 +32,19 @@ router.post('/', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Message is required' });
     }
 
+    console.log('[Chat] Received code length:', currentCode ? currentCode.length : 0);
+    console.log('[Chat] File name:', fileName || 'none');
+
     // Build system prompt with code context
     let systemPrompt = `You are a helpful coding assistant for students learning programming.
 You provide clear, educational explanations and help students understand their code.
-Keep your responses concise and focused on the student's question.`;
+Keep your responses concise and focused on the student's question.
+IMPORTANT: The student is viewing their code in the editor. Always refer to their current code when answering.`;
 
-    if (currentCode) {
-      systemPrompt += `\n\nThe student is currently working on the following code in file "${fileName || 'unknown'}":\n\n\`\`\`\n${currentCode}\n\`\`\``;
+    if (currentCode && currentCode.trim().length > 0) {
+      systemPrompt += `\n\nThe student is currently working on the following code in file "${fileName || 'unknown'}":\n\n\`\`\`python\n${currentCode}\n\`\`\`\n\nPlease refer to this code when answering their questions.`;
+    } else {
+      systemPrompt += `\n\n(Note: No code is currently open in the editor)`;
     }
 
     // Build conversation messages
@@ -60,7 +66,7 @@ Keep your responses concise and focused on the student's question.`;
 
     // Call Claude API
     const response = await anthropic.messages.create({
-      model: 'claude-3-5-haiku-20241022',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 2048,
       system: systemPrompt,
       messages: messages,

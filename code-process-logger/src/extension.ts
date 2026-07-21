@@ -11,6 +11,7 @@ import { ChatbotPanel } from './chatbotPanel';
 let writer: ProgSnap2Writer | undefined;
 let editTracker: EditTracker | undefined;
 let statusBarItem: vscode.StatusBarItem;
+let chatbotButton: vscode.StatusBarItem;
 let submitButton: vscode.StatusBarItem;
 let assignmentButton: vscode.StatusBarItem;
 let isSessionActive = false;
@@ -35,6 +36,14 @@ export function activate(context: vscode.ExtensionContext) {
   updateStatusBar(false);
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
+
+  // Chatbot button (hidden by default)
+  chatbotButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99.5);
+  chatbotButton.command = 'codeProcessLogger.openChatbot';
+  chatbotButton.text = '$(comment-discussion) Chatbot';
+  chatbotButton.tooltip = 'Open AI-PS Chatbot';
+  chatbotButton.hide();
+  context.subscriptions.push(chatbotButton);
 
   // Submit button (hidden by default)
   submitButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
@@ -61,7 +70,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('codeProcessLogger.toggleAutocomplete', () => toggleAutocomplete()),
     vscode.commands.registerCommand('codeProcessLogger.insertCompletion', () => insertCompletion()),
     vscode.commands.registerCommand('codeProcessLogger.handleTab', () => handleTab()),
-    vscode.commands.registerCommand('codeProcessLogger.openChatbot', () => ChatbotPanel.createOrShow(context.extensionUri)),
+    vscode.commands.registerCommand('codeProcessLogger.openChatbot', () => openChatbot(context)),
     vscode.commands.registerCommand('codeProcessLogger.submitCode', () => submitCode()),
   );
 
@@ -144,6 +153,7 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
   currentSubjectId = subjectId;
   currentAssignmentId = assignmentId;
   currentSessionId = sessionId;
+  chatbotButton.show();
   submitButton.show();
   assignmentButton.text = `$(file-code) Assignment: ${assignmentId}`;
   assignmentButton.show();
@@ -471,7 +481,8 @@ async function stopSession(): Promise<void> {
   vscode.commands.executeCommand('setContext', 'codeProcessLogger.sessionActive', false);
   updateStatusBar(false);
 
-  // Hide submit button and assignment button, clear session info
+  // Hide buttons, clear session info
+  chatbotButton.hide();
   submitButton.hide();
   assignmentButton.hide();
   currentSubjectId = '';
@@ -479,6 +490,20 @@ async function stopSession(): Promise<void> {
   currentSessionId = '';
 
   // vscode.window.showInformationMessage(`Code logging stopped. Logs saved to: ${outputDir}`);
+}
+
+function openChatbot(context: vscode.ExtensionContext): void {
+  if (!isSessionActive) {
+    vscode.window.showWarningMessage('세션이 활성화되지 않았습니다. (No active session)');
+    return;
+  }
+
+  // Capture current editor info before opening chatbot
+  const editor = vscode.window.activeTextEditor;
+  const currentCode = editor?.document.uri.scheme === 'file' ? editor.document.getText() : '';
+  const fileName = editor?.document.uri.scheme === 'file' ? editor.document.fileName : '';
+
+  ChatbotPanel.createOrShow(context.extensionUri, writer, currentSubjectId, currentAssignmentId, currentCode, fileName);
 }
 
 async function setSubjectId(context: vscode.ExtensionContext): Promise<void> {

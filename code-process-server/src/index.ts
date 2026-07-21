@@ -1,6 +1,10 @@
+import dotenv from 'dotenv';
+
+// Load environment variables BEFORE other imports
+dotenv.config();
+
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import { completeRouter } from './routes/complete';
 import { logsRouter } from './routes/logs';
 import { studentsRouter, initializeDefaultStudents } from './routes/students';
@@ -8,8 +12,6 @@ import { debugRouter } from './routes/debug';
 import chatRouter from './routes/chat';
 import submitRouter from './routes/submit';
 import assignmentsRouter from './routes/assignments';
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;

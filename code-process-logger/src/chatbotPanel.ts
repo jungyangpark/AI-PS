@@ -1,4 +1,8 @@
 import * as vscode from 'vscode';
+import { ProgSnap2Writer, EventType } from './progsnap2';
+
+const http = require('http');
+const https = require('https');
 
 export class ChatbotPanel {
     public static currentPanel: ChatbotPanel | undefined;
@@ -6,13 +10,31 @@ export class ChatbotPanel {
     private readonly _extensionUri: vscode.Uri;
     private _disposables: vscode.Disposable[] = [];
     private _chatHistory: Array<{ role: 'user' | 'assistant', content: string }> = [];
+    private _writer: ProgSnap2Writer | undefined;
+    private _subjectId: string;
+    private _assignmentId: string;
+    private _capturedCode: string;
+    private _capturedFileName: string;
 
-    public static createOrShow(extensionUri: vscode.Uri) {
-        const column = vscode.ViewColumn.Two;
+    public static createOrShow(
+        extensionUri: vscode.Uri,
+        writer: ProgSnap2Writer | undefined,
+        subjectId: string,
+        assignmentId: string,
+        capturedCode: string,
+        capturedFileName: string
+    ) {
+        const column = vscode.ViewColumn.Beside;
 
-        // If panel already exists, just reveal it
+        // If panel already exists, just reveal it and update captured code
         if (ChatbotPanel.currentPanel) {
             ChatbotPanel.currentPanel._panel.reveal(column);
+            // Update context
+            ChatbotPanel.currentPanel._writer = writer;
+            ChatbotPanel.currentPanel._subjectId = subjectId;
+            ChatbotPanel.currentPanel._assignmentId = assignmentId;
+            ChatbotPanel.currentPanel._capturedCode = capturedCode;
+            ChatbotPanel.currentPanel._capturedFileName = capturedFileName;
             return;
         }
 
@@ -28,12 +50,25 @@ export class ChatbotPanel {
             }
         );
 
-        ChatbotPanel.currentPanel = new ChatbotPanel(panel, extensionUri);
+        ChatbotPanel.currentPanel = new ChatbotPanel(panel, extensionUri, writer, subjectId, assignmentId, capturedCode, capturedFileName);
     }
 
-    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
+    private constructor(
+        panel: vscode.WebviewPanel,
+        extensionUri: vscode.Uri,
+        writer: ProgSnap2Writer | undefined,
+        subjectId: string,
+        assignmentId: string,
+        capturedCode: string,
+        capturedFileName: string
+    ) {
         this._panel = panel;
         this._extensionUri = extensionUri;
+        this._writer = writer;
+        this._subjectId = subjectId;
+        this._assignmentId = assignmentId;
+        this._capturedCode = capturedCode;
+        this._capturedFileName = capturedFileName;
 
         // Set the webview's initial html content
         this._update();
@@ -62,6 +97,16 @@ export class ChatbotPanel {
         // Add user message to history
         this._chatHistory.push({ role: 'user', content: userMessage });
 
+        // Log chatbot question to MainTable.csv
+        if (this._writer) {
+            this._writer.writeEvent({
+                EventType: EventType.ChatbotQuestion,
+                SubjectID: this._subjectId,
+                AssignmentID: this._assignmentId,
+                InsertText: userMessage.substring(0, 500), // Truncate to 500 chars
+            });
+        }
+
         // Show user message in webview
         this._panel.webview.postMessage({
             type: 'addMessage',
@@ -73,38 +118,39 @@ export class ChatbotPanel {
         this._panel.webview.postMessage({ type: 'setLoading', loading: true });
 
         try {
-            // Get current code context
-            const editor = vscode.window.activeTextEditor;
-            const currentCode = editor ? editor.document.getText() : '';
-            const fileName = editor ? editor.document.fileName : 'unknown';
+            // Use captured code from when chatbot was opened
+            const currentCode = this._capturedCode;
+            const fileName = this._capturedFileName || 'unknown';
+
+            console.log('[Chatbot] Using captured code length:', currentCode.length, 'from file:', fileName);
 
             // Get server URL from configuration
             const config = vscode.workspace.getConfiguration('codeProcessLogger');
             const serverUrl = config.get<string>('serverUrl', 'http://localhost:3000');
 
-            // Call server API
-            const response = await fetch(`${serverUrl}/api/chat`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    message: userMessage,
-                    currentCode,
-                    fileName,
-                    chatHistory: this._chatHistory
-                })
+            // Call server API using http/https
+            const requestBody = JSON.stringify({
+                message: userMessage,
+                currentCode,
+                fileName,
+                chatHistory: this._chatHistory
             });
 
-            if (!response.ok) {
-                throw new Error(`Server error: ${response.status}`);
-            }
-
-            const data = await response.json() as { response: string };
+            const data = await this._serverRequest(serverUrl, '/api/chat', requestBody);
             const assistantMessage = data.response;
 
             // Add assistant message to history
             this._chatHistory.push({ role: 'assistant', content: assistantMessage });
+
+            // Log chatbot response to MainTable.csv
+            if (this._writer) {
+                this._writer.writeEvent({
+                    EventType: EventType.ChatbotResponse,
+                    SubjectID: this._subjectId,
+                    AssignmentID: this._assignmentId,
+                    InsertText: assistantMessage.substring(0, 500), // Truncate to 500 chars
+                });
+            }
 
             // Show assistant message in webview
             this._panel.webview.postMessage({
@@ -146,6 +192,50 @@ export class ChatbotPanel {
         const webview = this._panel.webview;
         this._panel.title = 'AI-PS Chatbot';
         this._panel.webview.html = this._getHtmlForWebview(webview);
+    }
+
+    private _serverRequest(serverUrl: string, apiPath: string, body: string): Promise<any> {
+        return new Promise((resolve, reject) => {
+            const urlObj = new (require('url').URL)(`${serverUrl}${apiPath}`);
+            const isHttps = urlObj.protocol === 'https:';
+            const lib = isHttps ? https : http;
+
+            const req = lib.request(
+                {
+                    hostname: urlObj.hostname,
+                    port: urlObj.port,
+                    path: urlObj.pathname,
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Content-Length': Buffer.byteLength(body),
+                    },
+                    timeout: 30000, // 30 seconds for chat
+                },
+                (res: any) => {
+                    let responseData = '';
+                    res.on('data', (chunk: any) => { responseData += chunk; });
+                    res.on('end', () => {
+                        try {
+                            const json = JSON.parse(responseData);
+                            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                                resolve(json);
+                            } else {
+                                reject(new Error(json.error || `Server returned ${res.statusCode}`));
+                            }
+                        } catch {
+                            reject(new Error('Invalid server response'));
+                        }
+                    });
+                },
+            );
+
+            req.on('error', (e: any) => reject(new Error(`Connection failed: ${e.message}`)));
+            req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
+
+            req.write(body);
+            req.end();
+        });
     }
 
     private _getHtmlForWebview(webview: vscode.Webview) {

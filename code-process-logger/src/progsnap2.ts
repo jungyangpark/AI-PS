@@ -23,6 +23,8 @@ export enum EventType {
   AutocompleteOff = 'X-Autocomplete.Off',
   AutocompleteAccept = 'X-Autocomplete.Accept',
   Paste = 'X-Paste',
+  ChatbotQuestion = 'X-Chatbot.Question',
+  ChatbotResponse = 'X-Chatbot.Response',
 }
 
 
