@@ -43,6 +43,11 @@ router.post('/', async (req: Request, res: Response) => {
       });
     }
 
+    // Ensure gtCodePath is set (for backward compatibility with old configs)
+    if (!assignmentConfig.gtCodePath) {
+      assignmentConfig.gtCodePath = path.join(process.cwd(), 'gt_codes', `gt_${assignmentId}.py`);
+    }
+
     // Step 1: Evaluate code (grammar, unit tests, complexity)
     console.log(`🔍 Evaluating code...`);
     const evaluation = await evaluateCode(code, assignmentConfig);
