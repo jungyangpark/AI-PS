@@ -140,12 +140,8 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
     return;
   }
 
-  // Ask for Assignment ID
-  const assignmentId = await vscode.window.showInputBox({
-    prompt: '과제 ID를 입력하세요 (Enter Assignment ID)',
-    placeHolder: 'e.g., assignment_01',
-    ignoreFocusOut: true,
-  }) || 'default';
+  // Start with no assignment (autocomplete disabled)
+  const assignmentId = "-";
 
   const sessionId = `${subjectId}_${assignmentId}_${formatDate(new Date())}`;
 
@@ -155,7 +151,7 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
   currentSessionId = sessionId;
   chatbotButton.show();
   submitButton.show();
-  assignmentButton.text = `$(file-code) Assignment: ${assignmentId}`;
+  assignmentButton.text = `$(file-code) Assignment: -`;
   assignmentButton.show();
 
   // Initialize uploader (server only, no local files)
@@ -312,6 +308,7 @@ async function submitCode(): Promise<void> {
           }
           if (completionProvider) {
             completionProvider.setAssignmentId('-');
+            completionProvider.setEnabled(false); // Disable autocomplete
           }
 
         } else {
@@ -522,32 +519,48 @@ async function setSubjectId(context: vscode.ExtensionContext): Promise<void> {
 }
 
 async function setAssignmentId(context: vscode.ExtensionContext): Promise<void> {
-  const current = context.globalState.get<string>('assignmentId') || '';
   const newId = await vscode.window.showInputBox({
     prompt: '과제 ID를 입력하세요 (Enter Assignment ID)',
-    value: current,
+    placeHolder: 'e.g., assignment_01',
     ignoreFocusOut: true,
   });
-  if (newId === undefined || newId === current) { return; }
+  if (newId === undefined) { return; }
 
-  await context.globalState.update('assignmentId', newId);
-
-  if (!isSessionActive || !editTracker) {
-    vscode.window.showInformationMessage(`Assignment ID set to: ${newId}`);
+  // Allow empty string to be set as assignment ID
+  const trimmedId = newId.trim();
+  if (trimmedId === '') {
+    vscode.window.showWarningMessage('Assignment ID cannot be empty');
     return;
   }
 
-  // Simply update assignment ID without changing level or creating new session
-  currentAssignmentId = newId;
-  editTracker.updateAssignmentId(newId);
+  await context.globalState.update('assignmentId', trimmedId);
+
+  // Update button text regardless of session state
+  assignmentButton.text = `$(file-code) Assignment: ${trimmedId}`;
+
+  if (!isSessionActive || !editTracker) {
+    vscode.window.showInformationMessage(`Assignment ID set to: ${trimmedId}. Start a session to use it.`);
+    return;
+  }
+
+  // Update assignment ID in active session
+  currentAssignmentId = trimmedId;
+  editTracker.updateAssignmentId(trimmedId);
 
   // Update completion provider's assignment ID
   if (completionProvider) {
-    completionProvider.setAssignmentId(newId);
-  }
+    completionProvider.setAssignmentId(trimmedId);
 
-  assignmentButton.text = `$(file-code) Assignment: ${newId}`;
-  vscode.window.showInformationMessage(`Assignment ID updated to: ${newId}`);
+    // Enable autocomplete if assignment is set (not "-")
+    if (trimmedId !== '-') {
+      completionProvider.setEnabled(true);
+      updateStatusBar(true, true, 'autocomplete');
+      vscode.window.showInformationMessage(`Assignment ID set to: ${trimmedId}. Autocomplete enabled.`);
+    } else {
+      completionProvider.setEnabled(false);
+      vscode.window.showInformationMessage(`Assignment ID reset. Autocomplete disabled.`);
+    }
+  }
 }
 
 let currentLevel: number = 0;

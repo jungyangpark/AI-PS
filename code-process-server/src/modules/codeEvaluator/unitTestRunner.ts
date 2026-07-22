@@ -45,8 +45,9 @@ export async function runPythonUnitTests(
   const tempFile = path.join(tempDir, `code_${Date.now()}.py`);
 
   try {
-    // Write student code to temp file
-    fs.writeFileSync(tempFile, code, 'utf-8');
+    // Wrap student code with time measurement
+    const wrappedCode = wrapCodeWithTimer(code);
+    fs.writeFileSync(tempFile, wrappedCode, 'utf-8');
 
     // Run each test case separately
     for (let idx = 0; idx < testCases.length; idx++) {
@@ -54,11 +55,10 @@ export async function runPythonUnitTests(
       console.log(`      → Test ${idx + 1}/${testCases.length}: ${test.name}`);
 
       const testTimeout = test.timeout || 5000; // default 5 seconds per test
-      const startTime = Date.now();
 
       try {
         const result = await runSingleStdinTest(tempFile, test, testTimeout);
-        const executionTime = Date.now() - startTime;
+        const executionTime = result.executionTime || 0;
         results.executionTimes.push(executionTime);
         results.gtExecutionTimes.push(test.gtExecutionTime || 0);
 
@@ -119,13 +119,33 @@ export async function runPythonUnitTests(
 }
 
 /**
+ * Wraps Python code with execution time measurement
+ * Time is measured internally in Python and output to stderr
+ */
+function wrapCodeWithTimer(code: string): string {
+  return `import time
+import sys
+
+__start_time__ = time.perf_counter()
+
+# ===== Student code starts here =====
+${code}
+# ===== Student code ends here =====
+
+__end_time__ = time.perf_counter()
+sys.stderr.write(f"__EXECUTION_TIME__:{(__end_time__ - __start_time__) * 1000}\\n")
+sys.stderr.flush()
+`;
+}
+
+/**
  * Run a single test case with stdin input
  */
 function runSingleStdinTest(
   scriptPath: string,
   testCase: UnitTestCase,
   timeout: number
-): Promise<{ success: boolean; output?: string; error?: string }> {
+): Promise<{ success: boolean; output?: string; executionTime?: number; error?: string }> {
   return new Promise((resolve) => {
     const pythonProcess = spawn('python3', ['-u', scriptPath]);
 
@@ -164,17 +184,28 @@ function runSingleStdinTest(
         return;
       }
 
+      // Extract execution time from stderr
+      let executionTime = 0;
+      let cleanedStderr = stderr;
+      const timeMatch = stderr.match(/__EXECUTION_TIME__:([\d.]+)/);
+      if (timeMatch) {
+        executionTime = parseFloat(timeMatch[1]);
+        // Remove time marker from stderr
+        cleanedStderr = stderr.replace(/__EXECUTION_TIME__:[\d.]+\n?/, '');
+      }
+
       if (exitCode !== 0) {
         resolve({
           success: false,
-          error: stderr || `Process exited with code ${exitCode}`
+          error: cleanedStderr || `Process exited with code ${exitCode}`
         });
         return;
       }
 
       resolve({
         success: true,
-        output: stdout
+        output: stdout,
+        executionTime
       });
     });
 
