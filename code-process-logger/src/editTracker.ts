@@ -177,16 +177,9 @@ export class EditTracker implements vscode.Disposable {
         // Flush any pending normal edits first
         this.flushPendingEdits();
 
-        // Determine if autocomplete or paste
-        // autocompleteRecentlyUsed stays true for 2s after autocomplete is turned off
-        // (because user types a char to trigger suggestion, which turns off autocomplete,
-        //  then presses Tab to accept — all within ~2 seconds)
-        const eventType = (this.autocompleteEnabled || this.autocompleteRecentlyUsed)
-          ? EventType.AutocompleteAccept
-          : EventType.Paste;
-
+        // Multi-char insert = Paste (AutocompleteAccept is logged by completionProvider)
         this.writer.writeEvent({
-          EventType: eventType,
+          EventType: EventType.Paste,
           SubjectID: this.subjectId,
           AssignmentID: this.assignmentId,
           EditType: editType,
@@ -244,25 +237,11 @@ export class EditTracker implements vscode.Disposable {
     }
 
     for (const [filePath, fileEdits] of byFile) {
-      const firstInsert = fileEdits.find(e => e.insertText);
-      const rawInsert = fileEdits
-        .filter(e => e.insertText)
-        .map(e => e.insertText)
-        .join('');
-      const insertTexts = firstInsert
-        ? `[L${firstInsert.cursorLine}:${firstInsert.cursorColumn}]${rawInsert}`
-        : '';
-      const deleteTexts = fileEdits
-        .filter(e => e.deleteText)
-        .map(e => e.deleteText)
-        .join('; ');
-
       const firstEdit = fileEdits[0];
       const lastEdit = fileEdits[fileEdits.length - 1];
 
       const hasInsert = fileEdits.some(e => e.editType === 'Insert' || e.editType === 'Replace');
       const hasDelete = fileEdits.some(e => e.editType === 'Delete' || e.editType === 'Replace');
-      const editType = (hasInsert && hasDelete) ? 'Replace' : hasDelete ? 'Delete' : 'Insert';
 
       let codeStateId: string | undefined;
       try {
@@ -274,20 +253,100 @@ export class EditTracker implements vscode.Disposable {
         // Code state save is best-effort
       }
 
-      this.writer.writeEvent({
-        EventType: EventType.FileEdit,
-        SubjectID: this.subjectId,
-        AssignmentID: this.assignmentId,
-        Timestamp: firstEdit.timestamp.toISOString(),
-        EditType: editType,
-        InsertText: insertTexts.substring(0, 500),
-        DeleteText: deleteTexts.substring(0, 500),
-        SourceLocation: filePath,
-        CodeStateID: codeStateId,
-        CursorLine: lastEdit.cursorLine,
-        CursorColumn: lastEdit.cursorColumn,
-        'X-EditCount': fileEdits.length,
-      });
+      // If both Insert and Delete: log as separate events (Delete first, then Insert)
+      if (hasInsert && hasDelete) {
+        // Log Delete event
+        const deleteTexts = fileEdits
+          .filter(e => e.deleteText)
+          .map(e => e.deleteText)
+          .join('; ');
+
+        this.writer.writeEvent({
+          EventType: EventType.FileEdit,
+          SubjectID: this.subjectId,
+          AssignmentID: this.assignmentId,
+          Timestamp: firstEdit.timestamp.toISOString(),
+          EditType: 'Delete',
+          InsertText: '',
+          DeleteText: deleteTexts.substring(0, 500),
+          SourceLocation: filePath,
+          CodeStateID: undefined, // Don't save code state for Delete
+          CursorLine: firstEdit.cursorLine,
+          CursorColumn: firstEdit.cursorColumn,
+          'X-EditCount': fileEdits.filter(e => e.deleteText).length,
+        });
+
+        // Log Insert event
+        const firstInsert = fileEdits.find(e => e.insertText);
+        const rawInsert = fileEdits
+          .filter(e => e.insertText)
+          .map(e => e.insertText)
+          .join('');
+        const insertTexts = firstInsert
+          ? `[L${firstInsert.cursorLine}:${firstInsert.cursorColumn}]${rawInsert}`
+          : '';
+
+        this.writer.writeEvent({
+          EventType: EventType.FileEdit,
+          SubjectID: this.subjectId,
+          AssignmentID: this.assignmentId,
+          Timestamp: firstEdit.timestamp.toISOString(),
+          EditType: 'Insert',
+          InsertText: insertTexts.substring(0, 500),
+          DeleteText: '',
+          SourceLocation: filePath,
+          CodeStateID: codeStateId, // Save code state after Insert
+          CursorLine: lastEdit.cursorLine,
+          CursorColumn: lastEdit.cursorColumn,
+          'X-EditCount': fileEdits.filter(e => e.insertText).length,
+        });
+      } else if (hasDelete) {
+        // Only Delete
+        const deleteTexts = fileEdits
+          .filter(e => e.deleteText)
+          .map(e => e.deleteText)
+          .join('; ');
+
+        this.writer.writeEvent({
+          EventType: EventType.FileEdit,
+          SubjectID: this.subjectId,
+          AssignmentID: this.assignmentId,
+          Timestamp: firstEdit.timestamp.toISOString(),
+          EditType: 'Delete',
+          InsertText: '',
+          DeleteText: deleteTexts.substring(0, 500),
+          SourceLocation: filePath,
+          CodeStateID: codeStateId,
+          CursorLine: lastEdit.cursorLine,
+          CursorColumn: lastEdit.cursorColumn,
+          'X-EditCount': fileEdits.length,
+        });
+      } else {
+        // Only Insert
+        const firstInsert = fileEdits.find(e => e.insertText);
+        const rawInsert = fileEdits
+          .filter(e => e.insertText)
+          .map(e => e.insertText)
+          .join('');
+        const insertTexts = firstInsert
+          ? `[L${firstInsert.cursorLine}:${firstInsert.cursorColumn}]${rawInsert}`
+          : '';
+
+        this.writer.writeEvent({
+          EventType: EventType.FileEdit,
+          SubjectID: this.subjectId,
+          AssignmentID: this.assignmentId,
+          Timestamp: firstEdit.timestamp.toISOString(),
+          EditType: 'Insert',
+          InsertText: insertTexts.substring(0, 500),
+          DeleteText: '',
+          SourceLocation: filePath,
+          CodeStateID: codeStateId,
+          CursorLine: lastEdit.cursorLine,
+          CursorColumn: lastEdit.cursorColumn,
+          'X-EditCount': fileEdits.length,
+        });
+      }
     }
   }
 
@@ -356,6 +415,32 @@ export class EditTracker implements vscode.Disposable {
   resetAutocompleteState(): void {
     console.log('[EDIT] resetAutocompleteState called - autocomplete will be re-enabled after mid pause');
     this.autocompleteEnabled = false;
+  }
+
+  /**
+   * Start midPause timer immediately (e.g., when user presses ESC to dismiss ghost)
+   * This treats the current moment as "typing stopped" and starts 2s countdown
+   */
+  startMidPauseTimer(): void {
+    // Clear any existing timers
+    this.clearTimers();
+
+    // Don't start timer if no assignment is set
+    if (!this.assignmentId || this.assignmentId === '-') {
+      console.log('[EDIT] startMidPauseTimer - blocked (no assignment set)');
+      return;
+    }
+
+    // Don't start timer if autocomplete is already enabled
+    if (this.autocompleteEnabled) {
+      console.log('[EDIT] startMidPauseTimer - skipped (autocomplete already enabled)');
+      return;
+    }
+
+    console.log('[EDIT] startMidPauseTimer - setting midPauseTimer for 2s');
+    this.midPauseTimer = setTimeout(() => {
+      this.onMidPause();
+    }, this.midPauseMs);
   }
 
   dispose(): void {

@@ -37,6 +37,7 @@ extract_*.py
 assignment*.py
 temp.py
 practice/
+code-process-server/student_data
 
 .claude/
 CLAUDE.md

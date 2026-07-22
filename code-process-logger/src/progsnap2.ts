@@ -21,10 +21,18 @@ export enum EventType {
   PauseShort = 'X-Pause.Short',
   AutocompleteOn = 'X-Autocomplete.On',
   AutocompleteOff = 'X-Autocomplete.Off',
-  AutocompleteAccept = 'X-Autocomplete.Accept',
+  AutocompleteFollow = 'X-Autocomplete.Follow',    // Level 1 & 3: Typed as recommended
+  AutocompleteReject = 'X-Autocomplete.Reject',    // Level 1 & 3: Typed differently
+  AutocompleteAccept = 'X-Autocomplete.Accept',    // Level 3: Tab pressed
   Paste = 'X-Paste',
   ChatbotQuestion = 'X-Chatbot.Question',
   ChatbotResponse = 'X-Chatbot.Response',
+  SubmissionSuccess = 'X-Submission.Success',
+  SubmissionSyntaxError = 'X-Submission.SyntaxError',
+  SubmissionRuntimeError = 'X-Submission.RuntimeError',
+  SubmissionWrongAnswer = 'X-Submission.WrongAnswer',
+  SubmissionTimeLimitExceeded = 'X-Submission.TimeLimitExceeded',
+  SubmissionWrongAlgorithm = 'X-Submission.WrongAlgorithm',
 }
 
 

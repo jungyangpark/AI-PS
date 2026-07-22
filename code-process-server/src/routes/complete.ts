@@ -185,8 +185,10 @@ completeRouter.post('/', async (req: Request, res: Response) => {
       const lastLineFromPrefix = prefixLines[prefixLines.length - 1]?.trim() || '';
 
       // Compare student's code with cached recommendation
-      if (lastLineFromPrefix !== expectedCode) {
-        console.log(`🔄 [MISMATCH] Level 2 validation failed`);
+      const validationResult = lastLineFromPrefix === expectedCode ? 'FOLLOW' : 'REJECT';
+
+      if (validationResult === 'REJECT') {
+        console.log(`🔄 [REJECT] Validation failed`);
         console.log(`   Expected: "${expectedCode}"`);
         console.log(`   Student typed: "${lastLineFromPrefix}"`);
         console.log(`   → Clearing cache and regenerating recommendations`);
@@ -195,14 +197,14 @@ completeRouter.post('/', async (req: Request, res: Response) => {
         blockCache.delete(sessionId);
         // Fall through to normal generation below (will create new cache)
       } else {
-        // ✅ Match! Student typed the recommended code correctly
+        // ✅ FOLLOW! Student typed the recommended code correctly
 
         // Move to next block
         cache.currentIndex++;
 
         if (cache.currentIndex >= cache.blocks.length) {
           // No more lines
-          res.json({ completion: '', allBlocksCompleted: true });
+          res.json({ completion: '', allBlocksCompleted: true, validationResult: 'FOLLOW' });
           return;
         }
 
@@ -213,7 +215,7 @@ completeRouter.post('/', async (req: Request, res: Response) => {
         const kcInfo = nextLine.kcs.length > 0
           ? nextLine.kcs.map(kc => `${kc.name}(${kc.id})`).join(', ')
           : 'No KCs';
-        console.log(`✅ [ACCEPT] Line ${cache.currentIndex + 1}/${cache.blocks.length}: "${nextLine.code.trim()}"`);
+        console.log(`✅ [FOLLOW] Line ${cache.currentIndex + 1}/${cache.blocks.length}: "${nextLine.code.trim()}"`);
         console.log(`   KCs: ${kcInfo}`);
         console.log(`   Level: ${blockLevel} (Student: ${subjectId})`);
 
@@ -231,6 +233,7 @@ completeRouter.post('/', async (req: Request, res: Response) => {
           totalBlocks: cache.blocks.length,
           blockLevel,
           disableAutocomplete: shouldDisable,
+          validationResult: 'FOLLOW',  // ✨ 추가
         });
         return;
       }
@@ -289,7 +292,6 @@ completeRouter.post('/', async (req: Request, res: Response) => {
     // Fix first line based on cursor context
     const prefixLines = prefix.split('\n');
     const lastLine = prefixLines[prefixLines.length - 1];
-    console.log('📝 Full prefix:', prefix);
     console.log('Prefix last line:', JSON.stringify(lastLine));
     fullCompletion = fixFirstLine(prefix, fullCompletion);
     console.log('Completion after fix:', fullCompletion);

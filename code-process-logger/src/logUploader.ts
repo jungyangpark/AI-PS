@@ -31,6 +31,10 @@ export class LogUploader {
     this.buffer.push(event);
   }
 
+  updateAssignmentId(assignmentId: string): void {
+    this.assignmentId = assignmentId;
+  }
+
   async flush(): Promise<void> {
     if (this.buffer.length === 0) { return; }
 
@@ -54,7 +58,7 @@ export class LogUploader {
     try {
       await this.sendToServer('/api/logs/codestate', {
         subjectId: this.subjectId,
-        sessionId: this.sessionId,
+        assignmentId: this.assignmentId,
         codeStateId,
         fileName,
         content,

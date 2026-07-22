@@ -15,26 +15,21 @@ export interface AlgorithmValidationResult {
 }
 
 /**
- * Validates if student code uses the expected algorithm/approach
- * by comparing with GT code using LLM analysis
+ * Validates if student code demonstrates the target Knowledge Components (KCs)
+ * by analyzing with LLM. Does not require exact same implementation as GT code.
  */
 export async function validateAlgorithm(
   studentCode: string,
   gtCodePath: string,
-  expectedComplexity: string
+  expectedComplexity: string,
+  kcs: string[]
 ): Promise<AlgorithmValidationResult> {
 
   try {
-    // Read GT code
-    const gtCode = fs.readFileSync(gtCodePath, 'utf-8');
-
     // Call Claude API to analyze algorithm
-    const prompt = `You are a computer science professor evaluating student code.
+    const kcsList = kcs.map((kc, idx) => `${idx + 1}. ${kc}`).join('\n');
 
-**GT Code (Reference Solution):**
-\`\`\`python
-${gtCode}
-\`\`\`
+    const prompt = `You are a computer science professor evaluating student code.
 
 **Student Code (Submission):**
 \`\`\`python
@@ -43,21 +38,25 @@ ${studentCode}
 
 **Expected Time Complexity:** ${expectedComplexity}
 
+**Target Knowledge Components (Learning Objectives):**
+${kcsList}
+
 **Task:**
-Analyze whether the student's code uses the same algorithmic approach as the GT code.
-- Does it use the same core algorithm/data structure?
-- Does it have the same time complexity?
-- Does it follow the same problem-solving strategy?
+Evaluate whether the student's code demonstrates the target Knowledge Components (KCs) listed above.
+- Does the code demonstrate each of the target KCs?
+- Does it meet the expected time complexity requirement?
 
 **Important:**
-- Both codes produce correct output (already tested)
-- Focus on algorithmic approach, not code style
-- Be lenient with minor variations in implementation
+- The code already produces correct output (verified by unit tests)
+- Evaluate based solely on whether the target KCs are demonstrated
+- Different implementations and approaches are acceptable
+- Be lenient with implementation variations
+- Only mark as invalid if the code clearly does NOT demonstrate the required KCs
 
 Respond in JSON format:
 {
   "isValid": true or false,
-  "detectedApproach": "brief description of student's approach",
+  "detectedApproach": "brief description of student's approach and which KCs are demonstrated",
   "reason": "explanation of your decision"
 }`;
 

@@ -166,11 +166,23 @@ function runSingleStdinTest(
     }, timeout);
 
     pythonProcess.stdout.on('data', (data) => {
-      stdout += data.toString();
+      try {
+        stdout += data.toString();
+      } catch (e) {
+        // RangeError: Invalid string length (only for extreme cases)
+        // Keep whatever we have so far and stop collecting
+        console.error('[UNIT TEST] stdout RangeError - output too large, stopping collection');
+        pythonProcess.stdout.removeAllListeners('data');
+      }
     });
 
     pythonProcess.stderr.on('data', (data) => {
-      stderr += data.toString();
+      try {
+        stderr += data.toString();
+      } catch (e) {
+        console.error('[UNIT TEST] stderr RangeError - output too large, stopping collection');
+        pythonProcess.stderr.removeAllListeners('data');
+      }
     });
 
     pythonProcess.on('close', (exitCode) => {

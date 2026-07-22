@@ -156,7 +156,7 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
 
   // Initialize uploader (server only, no local files)
   const shortPauseMs = config.get<number>('shortPauseThreshold') || 1000;
-  const midPauseMs = config.get<number>('midPauseThreshold') || 10000;
+  const midPauseMs = config.get<number>('midPauseThreshold') || 2000;
 
   logUploader = new LogUploader(serverUrl, subjectId, assignmentId, sessionId);
 
@@ -214,6 +214,33 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
     if (editTracker) {
       editTracker.resetAutocompleteState();
     }
+  });
+
+  // Set event logging callback for Follow/Reject/Accept events
+  completionProvider.setOnLogEventCallback((eventType: string, data?: any) => {
+    // Only log if assignment is active (not "-")
+    if (currentAssignmentId === '-' || !writer) {
+      return;
+    }
+
+    // Map event type to ProgSnap2 EventType
+    let progSnapEventType: string;
+    if (eventType === 'AutocompleteFollow') {
+      progSnapEventType = EventType.AutocompleteFollow;
+    } else if (eventType === 'AutocompleteReject') {
+      progSnapEventType = EventType.AutocompleteReject;
+    } else if (eventType === 'AutocompleteAccept') {
+      progSnapEventType = EventType.AutocompleteAccept;
+    } else {
+      return; // Unknown event type
+    }
+
+    // Log the event
+    writer.writeEvent({
+      EventType: progSnapEventType,
+      SubjectID: currentSubjectId,
+      AssignmentID: currentAssignmentId,
+    });
   });
 
   // Disable all external autocomplete (Cursor, Copilot, IntelliSense)
@@ -305,6 +332,15 @@ async function submitCode(): Promise<void> {
           // Success case: Show "Correct!" only
           await vscode.window.showInformationMessage('✅ Correct!', { modal: true }, 'OK');
 
+          // Log submission success
+          if (writer) {
+            writer.writeEvent({
+              EventType: EventType.SubmissionSuccess,
+              SubjectID: currentSubjectId,
+              AssignmentID: currentAssignmentId,
+            });
+          }
+
           // Reset assignment ID to "-" after successful submission
           currentAssignmentId = '-';
           assignmentButton.text = '$(file-code) Assignment: -';
@@ -324,6 +360,28 @@ async function submitCode(): Promise<void> {
           const message = `❌ ${reason}`;
 
           await vscode.window.showErrorMessage(message, { modal: true }, 'OK');
+
+          // Log submission failure based on reason
+          if (writer) {
+            let eventType: string;
+            if (reason === 'Syntax Error') {
+              eventType = EventType.SubmissionSyntaxError;
+            } else if (reason === 'Runtime Error') {
+              eventType = EventType.SubmissionRuntimeError;
+            } else if (reason === 'Time Limit Exceeded') {
+              eventType = EventType.SubmissionTimeLimitExceeded;
+            } else if (reason === 'Wrong Algorithm') {
+              eventType = EventType.SubmissionWrongAlgorithm;
+            } else {
+              eventType = EventType.SubmissionWrongAnswer;
+            }
+
+            writer.writeEvent({
+              EventType: eventType,
+              SubjectID: currentSubjectId,
+              AssignmentID: currentAssignmentId,
+            });
+          }
 
           // Re-enable autocomplete for retry (wait state)
           if (completionProvider && currentAssignmentId !== '-') {
@@ -376,11 +434,31 @@ async function toggleAutocomplete(): Promise<void> {
   const isEnabled = completionProvider.isEnabled();
 
   if (isEnabled) {
-    // Turn OFF: disable and clear ghost
+    // Check if there's a cached completion that's being rejected
+    const hasCompletion = completionProvider.getOriginalCompletion() !== null;
+
+    // Turn OFF: disable and clear ghost (clearCache=true to request fresh completion)
     completionProvider.setEnabled(false);
-    await completionProvider.clearGhost();
+    await completionProvider.clearGhost(true);
+
+    // Log Reject event if user pressed ESC to dismiss ghost text
+    if (hasCompletion && writer && currentAssignmentId !== '-') {
+      writer.writeEvent({
+        EventType: EventType.AutocompleteReject,
+        SubjectID: currentSubjectId,
+        AssignmentID: currentAssignmentId,
+      });
+    }
+
+    // Notify editTracker so it can re-enable autocomplete after mid pause
+    if (editTracker) {
+      editTracker.resetAutocompleteState();
+      // Start midPauseTimer immediately - treat ESC as "typing stopped"
+      editTracker.startMidPauseTimer();
+    }
+
     updateStatusBar(true, false);
-    vscode.window.showInformationMessage('자동완성이 꺼졌습니다 (Autocomplete disabled)');
+    // vscode.window.showInformationMessage('자동완성이 꺼졌습니다 (Autocomplete disabled)');
   } else {
     // Turn ON: enable and trigger completion
     completionProvider.setEnabled(true);
@@ -544,13 +622,26 @@ async function setAssignmentId(context: vscode.ExtensionContext): Promise<void> 
     return;
   }
 
+  // Generate new sessionId when assignment changes
+  const newSessionId = `${currentSubjectId}_${trimmedId}_${formatDate(new Date())}`;
+  currentSessionId = newSessionId;
+
   // Update assignment ID in active session
   currentAssignmentId = trimmedId;
   editTracker.updateAssignmentId(trimmedId);
 
-  // Update completion provider's assignment ID
+  // Recreate log uploader with new assignment ID and session ID
+  const config = vscode.workspace.getConfiguration('codeProcessLogger');
+  const serverUrl = config.get<string>('serverUrl') || 'http://localhost:3000';
+  if (logUploader) {
+    await logUploader.dispose();
+  }
+  logUploader = new LogUploader(serverUrl, currentSubjectId, trimmedId, newSessionId);
+
+  // Update completion provider's assignment ID and session ID
   if (completionProvider) {
     completionProvider.setAssignmentId(trimmedId);
+    completionProvider.setSessionId(newSessionId);
 
     // Enable autocomplete if assignment is set (not "-")
     if (trimmedId !== '-') {

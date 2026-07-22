@@ -26,6 +26,7 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
 
   private disposables: vscode.Disposable[] = [];
   private onDisableCallback: (() => void) | undefined;
+  private onLogEventCallback: ((eventType: string, data?: any) => void) | undefined;
   private decorationType: vscode.TextEditorDecorationType;
   private insertedNewlinesCount: number = 0; // Track how many temporary newlines we inserted
 
@@ -480,6 +481,10 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     this.onDisableCallback = callback;
   }
 
+  setOnLogEventCallback(callback: (eventType: string, data?: any) => void): void {
+    this.onLogEventCallback = callback;
+  }
+
   isEnabled(): boolean {
     return this.enabled;
   }
@@ -547,6 +552,11 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       // Accept the inline suggestion
       console.log(`🔵 [TAB] Committing inline suggestion...`);
       await vscode.commands.executeCommand('editor.action.inlineSuggest.commit');
+
+      // Level 3: Log Accept event (Tab pressed to accept)
+      if (this.onLogEventCallback) {
+        this.onLogEventCallback('AutocompleteAccept');
+      }
 
       // Clear cached data
       console.log(`🔵 [TAB] Clearing ghost...`);
@@ -710,6 +720,12 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       if (this.matchedChars >= this.cachedCompletion.length) {
         await this.clearGhost();
         this.currentLineCompleted = true;
+
+        // Level 1: Log Follow event (typed full line correctly)
+        if (this.onLogEventCallback) {
+          this.onLogEventCallback('AutocompleteFollow');
+        }
+
         this.logToFile('handleLevel1Type', { matched: true, currentLineCompleted: true, waitingForEnter: true });
       } else {
         // Update position and re-trigger inline suggestion
@@ -719,6 +735,12 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       }
     } else {
       // Doesn't match: clear ghost text, cache, disable autocomplete, and type normally
+
+      // Level 1: Log Reject event (typed differently)
+      if (this.onLogEventCallback) {
+        this.onLogEventCallback('AutocompleteReject');
+      }
+
       await this.clearGhost(true); // Clear cache since student typed different code
       this.enabled = false;
       if (this.onDisableCallback) {
@@ -793,6 +815,12 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       if (this.matchedChars >= this.cachedCompletion.length) {
         await this.clearGhost();
         this.currentLineCompleted = true;
+
+        // Level 3: Log Follow event (typed full line correctly)
+        if (this.onLogEventCallback) {
+          this.onLogEventCallback('AutocompleteFollow');
+        }
+
         console.log(`[COMP] ✅ Line completed! matched=${this.matchedChars}/${this.cachedCompletion.length}`);
         this.logToFile('handleLevel3Type', { matched: true, currentLineCompleted: true, waitingForEnter: true });
       } else {
@@ -805,6 +833,12 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     } else {
       // Doesn't match: clear ghost text, cache, disable autocomplete, and type normally
       console.log(`[COMP] ❌ Mismatch! Expected: "${trimmedCompletion.substring(0, 10)}", Got: "${char}"`);
+
+      // Level 3: Log Reject event (typed differently)
+      if (this.onLogEventCallback) {
+        this.onLogEventCallback('AutocompleteReject');
+      }
+
       await this.clearGhost(true); // Clear cache since student typed different code
       this.enabled = false;
       if (this.onDisableCallback) {

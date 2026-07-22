@@ -6,6 +6,7 @@ export interface CodeEvaluationConfig {
   testCases: UnitTestCase[];
   gtCodePath: string; // Path to GT code for algorithm comparison
   expectedComplexity: string; // Expected time complexity (for reference)
+  kcs: string[]; // Knowledge Components to check
 }
 
 export interface CodeEvaluationResult {
@@ -53,7 +54,7 @@ export async function evaluateCode(
 
   const [unitTestResult, algorithmValidation] = await Promise.all([
     runPythonUnitTests(code, config.testCases),
-    validateAlgorithm(code, config.gtCodePath, config.expectedComplexity)
+    validateAlgorithm(code, config.gtCodePath, config.expectedComplexity, config.kcs)
   ]);
 
   // Check unit test results first
