@@ -21,18 +21,8 @@ export interface AlgorithmValidationResult {
 export async function validateAlgorithm(
   studentCode: string,
   gtCodePath: string,
-  expectedComplexity: string,
-  testResult: UnitTestResult
+  expectedComplexity: string
 ): Promise<AlgorithmValidationResult> {
-
-  if (!testResult.passed) {
-    return {
-      isValid: false,
-      detectedApproach: 'Unknown',
-      expectedApproach: expectedComplexity,
-      reason: 'Cannot validate algorithm - tests did not pass'
-    };
-  }
 
   try {
     // Read GT code

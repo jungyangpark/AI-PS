@@ -274,6 +274,13 @@ async function submitCode(): Promise<void> {
   const config = vscode.workspace.getConfiguration('codeProcessLogger');
   const serverUrl = config.get<string>('serverUrl') || 'http://localhost:3000';
 
+  // Immediately disable autocomplete when submit button is clicked
+  if (completionProvider) {
+    completionProvider.setEnabled(false);
+    await completionProvider.clearGhost();
+    updateStatusBar(true, false);
+  }
+
   // Show evaluation progress with progress notification
   await vscode.window.withProgress(
     {
@@ -308,7 +315,7 @@ async function submitCode(): Promise<void> {
           }
           if (completionProvider) {
             completionProvider.setAssignmentId('-');
-            completionProvider.setEnabled(false); // Disable autocomplete
+            // Autocomplete already disabled above
           }
 
         } else {
@@ -317,32 +324,26 @@ async function submitCode(): Promise<void> {
           const message = `❌ ${reason}`;
 
           await vscode.window.showErrorMessage(message, { modal: true }, 'OK');
-        }
 
-        // Disable autocomplete after submission (success or failure)
-        if (completionProvider) {
-          completionProvider.setEnabled(false);
-          await completionProvider.clearGhost();
-          updateStatusBar(true, false);
-        }
-        // Reset EditTracker's autocomplete state so it can be re-enabled after 2s
-        if (editTracker) {
-          editTracker.resetAutocompleteState();
+          // Re-enable autocomplete for retry (wait state)
+          if (completionProvider && currentAssignmentId !== '-') {
+            // Reset EditTracker's autocomplete state so it can be re-enabled after 2s
+            if (editTracker) {
+              editTracker.resetAutocompleteState();
+            }
+          }
         }
 
       } catch (error: any) {
         console.error('Submit error:', error);
         await vscode.window.showErrorMessage('❌ Runtime Error', { modal: true }, 'OK');
 
-        // Disable autocomplete even on error
-        if (completionProvider) {
-          completionProvider.setEnabled(false);
-          await completionProvider.clearGhost();
-          updateStatusBar(true, false);
-        }
-        // Reset EditTracker's autocomplete state
-        if (editTracker) {
-          editTracker.resetAutocompleteState();
+        // Re-enable autocomplete on error for retry (wait state)
+        if (completionProvider && currentAssignmentId !== '-') {
+          // Reset EditTracker's autocomplete state so it can be re-enabled after 2s
+          if (editTracker) {
+            editTracker.resetAutocompleteState();
+          }
         }
       }
     }

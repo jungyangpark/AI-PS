@@ -47,13 +47,16 @@ export async function evaluateCode(
   }
   console.log('   ✅ Grammar check passed');
 
-  // Step 2: Run unit tests
+  // Step 2 & 3: Run unit tests and algorithm validation in parallel
   console.log(`   [2/3] Running ${config.testCases.length} unit tests...`);
-  const unitTestResult = await runPythonUnitTests(
-    code,
-    config.testCases
-  );
+  console.log('   [3/3] Validating algorithm with LLM...');
 
+  const [unitTestResult, algorithmValidation] = await Promise.all([
+    runPythonUnitTests(code, config.testCases),
+    validateAlgorithm(code, config.gtCodePath, config.expectedComplexity)
+  ]);
+
+  // Check unit test results first
   if (!unitTestResult.passed) {
     console.log(`   ❌ Unit tests failed: ${unitTestResult.passedTests}/${config.testCases.length} passed`);
 
@@ -79,15 +82,7 @@ export async function evaluateCode(
   }
   console.log(`   ✅ All unit tests passed (${unitTestResult.passedTests}/${config.testCases.length})`);
 
-  // Step 3: Validate algorithm using LLM
-  console.log('   [3/3] Validating algorithm with LLM...');
-  const algorithmValidation = await validateAlgorithm(
-    code,
-    config.gtCodePath,
-    config.expectedComplexity,
-    unitTestResult
-  );
-
+  // Check algorithm validation results
   if (!algorithmValidation.isValid) {
     console.log(`   ❌ Algorithm validation failed: ${algorithmValidation.reason}`);
     return {
