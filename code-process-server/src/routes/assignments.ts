@@ -90,7 +90,7 @@ router.post('/register', async (req: Request, res: Response) => {
       title: assignmentId, // Use assignmentId as title
       description: description || `Assignment ${assignmentId}`,
       testCases,
-      inputSizes,
+      gtCodePath, // Store GT code path for algorithm validation
       expectedComplexity: expectedComplexity || 'O(n)',
       kcs: kcs || []
     };

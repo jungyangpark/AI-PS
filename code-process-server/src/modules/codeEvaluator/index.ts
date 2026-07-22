@@ -1,18 +1,18 @@
 import { checkPythonGrammar, GrammarCheckResult } from './grammarChecker';
 import { runPythonUnitTests, UnitTestCase, UnitTestResult } from './unitTestRunner';
-import { validateTimeComplexity, TimeComplexity, ComplexityValidationResult } from './complexityValidator';
+import { validateAlgorithm, AlgorithmValidationResult } from './algorithmValidator';
 
 export interface CodeEvaluationConfig {
   testCases: UnitTestCase[];
-  inputSizes: number[]; // Corresponding input sizes for complexity testing
-  expectedComplexity: TimeComplexity;
+  gtCodePath: string; // Path to GT code for algorithm comparison
+  expectedComplexity: string; // Expected time complexity (for reference)
 }
 
 export interface CodeEvaluationResult {
   success: boolean;
   grammarCheck: GrammarCheckResult;
   unitTestResult?: UnitTestResult;
-  complexityValidation?: ComplexityValidationResult;
+  algorithmValidation?: AlgorithmValidationResult;
   message: string;
   reason?: string;
 }
@@ -21,10 +21,10 @@ export interface CodeEvaluationResult {
  * Evaluates submitted code comprehensively
  * 1. Grammar/syntax check
  * 2. Unit test execution
- * 3. Time complexity validation
+ * 3. Algorithm validation using LLM
  *
  * @param code - The Python code to evaluate
- * @param config - Evaluation configuration including tests and expected complexity
+ * @param config - Evaluation configuration including tests, GT code path, and expected complexity
  * @returns Detailed evaluation result
  */
 export async function evaluateCode(
@@ -79,33 +79,34 @@ export async function evaluateCode(
   }
   console.log(`   ✅ All unit tests passed (${unitTestResult.passedTests}/${config.testCases.length})`);
 
-  // Step 3: Validate time complexity
-  console.log('   [3/3] Validating time complexity...');
-  const complexityValidation = validateTimeComplexity(
-    unitTestResult,
+  // Step 3: Validate algorithm using LLM
+  console.log('   [3/3] Validating algorithm with LLM...');
+  const algorithmValidation = await validateAlgorithm(
+    code,
+    config.gtCodePath,
     config.expectedComplexity,
-    config.inputSizes
+    unitTestResult
   );
 
-  if (!complexityValidation.isValid) {
-    console.log(`   ❌ Complexity validation failed: detected ${complexityValidation.detectedComplexity}, expected ${config.expectedComplexity}`);
+  if (!algorithmValidation.isValid) {
+    console.log(`   ❌ Algorithm validation failed: ${algorithmValidation.reason}`);
     return {
       success: false,
       grammarCheck,
       unitTestResult,
-      complexityValidation,
+      algorithmValidation,
       message: 'Wrong',
-      reason: 'Time Limit Exceeded'
+      reason: 'Wrong Algorithm'
     };
   }
-  console.log(`   ✅ Complexity validation passed: ${complexityValidation.detectedComplexity}`);
+  console.log(`   ✅ Algorithm validation passed: ${algorithmValidation.detectedApproach}`);
 
   // All checks passed!
   return {
     success: true,
     grammarCheck,
     unitTestResult,
-    complexityValidation,
+    algorithmValidation,
     message: 'Correct!'
   };
 }
@@ -113,4 +114,4 @@ export async function evaluateCode(
 // Export sub-modules
 export { checkPythonGrammar, GrammarCheckResult } from './grammarChecker';
 export { runPythonUnitTests, UnitTestCase, UnitTestResult } from './unitTestRunner';
-export { validateTimeComplexity, TimeComplexity, ComplexityValidationResult, generateComplexityTestSizes } from './complexityValidator';
+export { validateAlgorithm, AlgorithmValidationResult } from './algorithmValidator';

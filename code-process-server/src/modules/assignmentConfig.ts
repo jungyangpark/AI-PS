@@ -2,10 +2,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CodeEvaluationConfig } from './codeEvaluator';
 
-export interface AssignmentConfig extends CodeEvaluationConfig {
+export interface AssignmentConfig {
   assignmentId: string;
   title: string;
   description: string;
+  testCases: CodeEvaluationConfig['testCases'];
+  gtCodePath: string; // Path to GT code file
+  expectedComplexity: string;
   kcs: string[]; // Knowledge Components for this assignment
 }
 

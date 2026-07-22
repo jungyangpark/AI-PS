@@ -97,7 +97,7 @@ router.post('/', async (req: Request, res: Response) => {
         reason: evaluation.reason,
         grammarCheck: evaluation.grammarCheck,
         unitTestResult: evaluation.unitTestResult,
-        complexityValidation: evaluation.complexityValidation
+        algorithmValidation: evaluation.algorithmValidation
       },
       analysis: analysis ? {
         blocks: analysis.blocks,

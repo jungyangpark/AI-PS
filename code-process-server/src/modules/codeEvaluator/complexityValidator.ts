@@ -58,7 +58,17 @@ export function validateTimeComplexity(
   }
 
   // Compare student times with GT times
-  const timeRatios = studentTimes.map((studentTime, idx) => {
+  // Filter out very small times (<100ms) as they are unreliable for ratio comparison
+  const reliableIndices = gtTimes
+    .map((time, idx) => ({ time, idx }))
+    .filter(({ time }) => time >= 100)
+    .map(({ idx }) => idx);
+
+  // If no reliable times, use all times but with more lenient thresholds
+  const indicesToUse = reliableIndices.length >= 2 ? reliableIndices : studentTimes.map((_, idx) => idx);
+
+  const timeRatios = indicesToUse.map(idx => {
+    const studentTime = studentTimes[idx];
     const gtTime = gtTimes[idx];
     if (gtTime === 0) return 1;
     return studentTime / gtTime;
@@ -68,8 +78,8 @@ export function validateTimeComplexity(
   const maxRatio = Math.max(...timeRatios);
   const avgRatio = timeRatios.reduce((sum, r) => sum + r, 0) / timeRatios.length;
 
-  // Allow up to 2x slower on average, 3x on max
-  const isValid = maxRatio <= 3.0 && avgRatio <= 2.0;
+  // More lenient thresholds: allow up to 3x slower on average, 5x on max
+  const isValid = maxRatio <= 5.0 && avgRatio <= 3.0;
 
   const detectedComplexity = isValid
     ? expectedComplexity
