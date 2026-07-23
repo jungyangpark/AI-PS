@@ -30,16 +30,9 @@ Thumbs.db
 # PDF File
 *.pdf
 
-# Assignment file
-post-test/
-pre-test/
-extract_*.py
-assignment*.py
-temp.py
-practice/
 code-process-server/student_data
+not_for_Git
 
 .claude/
 CLAUDE.md
 .vscode/
-prep_meeting/
