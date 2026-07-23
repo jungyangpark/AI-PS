@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { DEFAULT_KC_LEVELS } from '../modules/studentEvaluation/kcMapping';
 
 export const studentsRouter = Router();
 
@@ -20,43 +21,45 @@ interface Student {
   lastLoginAt: string | null;
 }
 
-// Default KC levels - all start at Level 2
-const DEFAULT_KC_LEVELS: Record<string, number> = {
-  'KC_001': 2, // conditional_logic
-  'KC_002': 2, // iteration
-  'KC_003': 2, // function_definition
-  'KC_004': 2, // list_manipulation
-  'KC_005': 2, // string_operation
-  'KC_006': 2, // arithmetic_operation
-  'KC_007': 2, // recursion
-  'KC_008': 2, // recursive_thinking
-  'KC_009': 2, // input_output
-  'KC_010': 2, // variable_assignment
-  'KC_011': 2, // boolean_logic
-};
+// KC_000: unmapped
+// KC_001 ~ KC_020: 기본 KC (BASE_KCS)
+// KC_021 ~ KC_026: Algorithm-specific KC (Recursion 3개 + DP 3개)
 
 function loadStudents(): Record<string, Student> {
   if (fs.existsSync(STUDENTS_FILE)) {
     const students = JSON.parse(fs.readFileSync(STUDENTS_FILE, 'utf-8'));
 
-    // Migrate old students without kcLevels
+    // Migrate old students without kcLevels or with old 11 KCs
     for (const id in students) {
       if (!students[id].kcLevels) {
         students[id].kcLevels = { ...DEFAULT_KC_LEVELS };
       }
 
-      // Test accounts: unify all KC levels
-      if (id.includes('lv1') || id === 'test_lv1') {
+      // Upgrade from 11 KCs to 27 KCs for all students
+      if (Object.keys(students[id].kcLevels).length < 27) {
+        const oldLevels = students[id].kcLevels;
+        students[id].kcLevels = { ...DEFAULT_KC_LEVELS };
+
+        // Copy old levels if they exist
+        for (const kc in oldLevels) {
+          if (kc in students[id].kcLevels) {
+            students[id].kcLevels[kc] = oldLevels[kc];
+          }
+        }
+      }
+
+      // Test accounts: set specific KC levels (27 KCs)
+      if (id === 'test_lv1') {
         // Level 1 for all KCs
         for (const kc in students[id].kcLevels) {
           students[id].kcLevels[kc] = 1;
         }
-      } else if (id.includes('lv2') || id === 'test_lv2') {
+      } else if (id === 'test_lv2') {
         // Level 2 for all KCs
         for (const kc in students[id].kcLevels) {
           students[id].kcLevels[kc] = 2;
         }
-      } else if (id.includes('lv3') || id === 'test_lv3') {
+      } else if (id === 'test_lv3') {
         // Level 3 for all KCs
         for (const kc in students[id].kcLevels) {
           students[id].kcLevels[kc] = 3;

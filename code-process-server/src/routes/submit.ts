@@ -3,10 +3,15 @@ import { code2BlockAnalyzer } from '../modules/code2block';
 import { evaluateCode } from '../modules/codeEvaluator';
 import { loadAssignmentConfig } from '../modules/assignmentConfig';
 import { updateStudentModel } from '../modules/studentEvaluation';
+import { convertBKTToKCLevels } from '../modules/studentEvaluation/kcMapping';
 import fs from 'fs/promises';
+import fssync from 'fs';
 import path from 'path';
 
 const router = Router();
+
+const DATA_DIR = process.env.LOG_DIR || './logs';
+const STUDENTS_FILE = path.join(DATA_DIR, 'students.json');
 
 interface SubmitRequest {
   studentId: string;
@@ -14,6 +19,115 @@ interface SubmitRequest {
   sessionId: string;
   code: string;
   fileName: string;
+}
+
+interface Student {
+  id: string;
+  passwordHash: string | null;
+  level: number;
+  kcLevels: Record<string, number>;
+  createdAt: string;
+  lastLoginAt: string | null;
+}
+
+/**
+ * Update students.json with BKT-based KC levels
+ */
+function updateStudentsKCLevels(
+  studentId: string,
+  bktMastery: Record<string, number> | undefined,
+  strugglingRatio?: number
+) {
+  if (!bktMastery) return;
+
+  try {
+    // Load students.json
+    if (!fssync.existsSync(STUDENTS_FILE)) {
+      console.warn(`[UpdateKCLevels] students.json not found, skipping update`);
+      return;
+    }
+
+    const students: Record<string, Student> = JSON.parse(
+      fssync.readFileSync(STUDENTS_FILE, 'utf-8')
+    );
+
+    if (!students[studentId]) {
+      console.warn(`[UpdateKCLevels] Student ${studentId} not found in students.json`);
+      return;
+    }
+
+    // Convert BKT mastery to KC levels (1/2/3) with struggling penalty
+    const updatedKCLevels = convertBKTToKCLevels(bktMastery, strugglingRatio);
+
+    // Update student's kcLevels
+    students[studentId].kcLevels = updatedKCLevels;
+
+    // Save back to students.json
+    fssync.writeFileSync(STUDENTS_FILE, JSON.stringify(students, null, 2), 'utf-8');
+
+    if (strugglingRatio !== undefined) {
+      console.log(`[UpdateKCLevels] Updated KC levels for ${studentId} (struggling ratio: ${strugglingRatio.toFixed(2)})`);
+    } else {
+      console.log(`[UpdateKCLevels] Updated KC levels for ${studentId}`);
+    }
+  } catch (error) {
+    console.error(`[UpdateKCLevels] Error updating KC levels:`, error);
+  }
+}
+
+/**
+ * Helper: Extract level from assignmentId (e.g., "test_lv3" -> 3)
+ */
+function extractLevelFromAssignmentId(assignmentId: string): number | undefined {
+  const match = assignmentId.match(/lv(\d+)/i);
+  return match ? parseInt(match[1], 10) : undefined;
+}
+
+/**
+ * Helper: Find latest MainTable CSV for student session
+ */
+async function findLatestMainTableCSV(
+  studentId: string,
+  assignmentId: string
+): Promise<string | undefined> {
+  try {
+    // Extract level from assignmentId
+    const level = extractLevelFromAssignmentId(assignmentId);
+    if (!level) return undefined;
+
+    // Try common log patterns
+    const logBasePath = path.join(process.cwd(), 'logs');
+    const possiblePaths = [
+      path.join(logBasePath, assignmentId, studentId),
+      path.join(logBasePath, `test_lv${level}`, studentId),
+      path.join(logBasePath, studentId)
+    ];
+
+    for (const dirPath of possiblePaths) {
+      try {
+        const files = await fs.readdir(dirPath);
+        const mainTableFiles = files
+          .filter(f => f.startsWith('MainTable') && f.endsWith('.csv'))
+          .sort()
+          .reverse(); // Most recent first
+
+        if (mainTableFiles.length > 0) {
+          const csvPath = path.join(dirPath, mainTableFiles[0]);
+          console.log(`   Found MainTable CSV: ${csvPath}`);
+          return csvPath;
+        }
+      } catch (err) {
+        // Directory doesn't exist, try next path
+        continue;
+      }
+    }
+
+    console.log(`   No MainTable CSV found for ${studentId}/${assignmentId}`);
+    return undefined;
+  } catch (error) {
+    console.error(`Error finding MainTable CSV:`, error);
+    return undefined;
+  }
 }
 
 /**
@@ -68,23 +182,55 @@ router.post('/', async (req: Request, res: Response) => {
 
       // Step 3: Update student model
       console.log(`👤 Updating student model...`);
+
+      // Find latest MainTable CSV for this student session
+      const csvPath = await findLatestMainTableCSV(studentId, assignmentId);
+
+      // Extract level from assignmentId (e.g., "test_lv3" -> 3)
+      const level = extractLevelFromAssignmentId(assignmentId);
+
+      // Use KCs from analysis, fallback to config KCs
+      const detectedKCs = analysis.summary.kcs.length > 0
+        ? analysis.summary.kcs
+        : assignmentConfig.kcs;
+
       studentModel = updateStudentModel(
         studentId,
-        assignmentConfig.kcs,
+        detectedKCs,
         true,
-        analysis.blocks
+        csvPath,
+        level
       );
 
       console.log(`   Total submissions: ${studentModel.totalSubmissions}`);
       console.log(`   Successful: ${studentModel.successfulSubmissions}`);
+
+      // Update students.json with BKT-based KC levels (with struggling penalty)
+      updateStudentsKCLevels(
+        studentId,
+        studentModel.bktMastery,
+        studentModel.lastStrugglingScore?.ratio
+      );
     } else {
       console.log(`❌ Code evaluation failed: ${evaluation.reason}`);
 
       // Update student model with failed attempt
+      const csvPath = await findLatestMainTableCSV(studentId, assignmentId);
+      const level = extractLevelFromAssignmentId(assignmentId);
+
       studentModel = updateStudentModel(
         studentId,
         assignmentConfig.kcs,
-        false
+        false,
+        csvPath,
+        level
+      );
+
+      // Update students.json with BKT-based KC levels (even on failure, with struggling penalty)
+      updateStudentsKCLevels(
+        studentId,
+        studentModel.bktMastery,
+        studentModel.lastStrugglingScore?.ratio
       );
     }
 
@@ -101,8 +247,7 @@ router.post('/', async (req: Request, res: Response) => {
         message: evaluation.message,
         reason: evaluation.reason,
         grammarCheck: evaluation.grammarCheck,
-        unitTestResult: evaluation.unitTestResult,
-        algorithmValidation: evaluation.algorithmValidation
+        unitTestResult: evaluation.unitTestResult
       },
       analysis: analysis ? {
         blocks: analysis.blocks,
@@ -115,7 +260,10 @@ router.post('/', async (req: Request, res: Response) => {
           Object.entries(studentModel.kcLevels).filter(([kc]) =>
             assignmentConfig.kcs.includes(kc)
           )
-        )
+        ),
+        bktMastery: studentModel.bktMastery,
+        lastStrugglingScore: studentModel.lastStrugglingScore,
+        lastCombinedScore: studentModel.lastCombinedScore
       }
     };
 
@@ -142,11 +290,15 @@ router.post('/', async (req: Request, res: Response) => {
 
     console.log(`💾 Submission saved: ${submissionFile}`);
 
+    // Generate new sessionId for next logging session (after submission)
+    const newSessionId = `${studentId}_${assignmentId}_${Date.now()}`;
+
     // Return response
     res.json({
       success: evaluation.success,
       message: evaluation.message,
       reason: evaluation.reason,
+      newSessionId: newSessionId, // Frontend should use this for next log session
       analysis: analysis ? {
         totalBlocks: analysis.summary.totalBlocks,
         kcs: analysis.summary.kcs,
@@ -159,7 +311,10 @@ router.post('/', async (req: Request, res: Response) => {
           Object.entries(studentModel.kcLevels).filter(([kc]) =>
             assignmentConfig.kcs.includes(kc)
           )
-        )
+        ),
+        bktMastery: studentModel.bktMastery,
+        strugglingScore: studentModel.lastStrugglingScore,
+        combinedScore: studentModel.lastCombinedScore
       } : null
     });
 

@@ -1,10 +1,9 @@
 import { checkPythonGrammar, GrammarCheckResult } from './grammarChecker';
-import { runPythonUnitTests, UnitTestCase, UnitTestResult } from './unitTestRunner';
-import { validateAlgorithm, AlgorithmValidationResult } from './algorithmValidator';
+import { runPythonUnitTests, UnitTestCase, UnitTestResult, measureGTExecutionTimes } from './unitTestRunner';
 
 export interface CodeEvaluationConfig {
   testCases: UnitTestCase[];
-  gtCodePath: string; // Path to GT code for algorithm comparison
+  gtCodePath: string; // Path to GT code for time measurement
   expectedComplexity: string; // Expected time complexity (for reference)
   kcs: string[]; // Knowledge Components to check
 }
@@ -13,7 +12,6 @@ export interface CodeEvaluationResult {
   success: boolean;
   grammarCheck: GrammarCheckResult;
   unitTestResult?: UnitTestResult;
-  algorithmValidation?: AlgorithmValidationResult;
   message: string;
   reason?: string;
 }
@@ -21,8 +19,8 @@ export interface CodeEvaluationResult {
 /**
  * Evaluates submitted code comprehensively
  * 1. Grammar/syntax check
- * 2. Unit test execution
- * 3. Algorithm validation using LLM
+ * 2. GT code time measurement
+ * 3. Unit test execution with dynamic time limits
  *
  * @param code - The Python code to evaluate
  * @param config - Evaluation configuration including tests, GT code path, and expected complexity
@@ -48,18 +46,26 @@ export async function evaluateCode(
   }
   console.log('   ✅ Grammar check passed');
 
-  // Step 2 & 3: Run unit tests and algorithm validation in parallel
-  console.log(`   [2/3] Running ${config.testCases.length} unit tests...`);
-  console.log('   [3/3] Validating algorithm with LLM...');
+  // Step 2: Measure GT code execution times
+  console.log('   [2/3] Measuring GT code execution times...');
+  const gtExecutionTimes = await measureGTExecutionTimes(config.gtCodePath, config.testCases);
 
-  const [unitTestResult, algorithmValidation] = await Promise.all([
-    runPythonUnitTests(code, config.testCases),
-    validateAlgorithm(code, config.gtCodePath, config.expectedComplexity, config.kcs)
-  ]);
+  // Set GT times in test cases for dynamic timeout calculation
+  const testCasesWithGTTimes = config.testCases.map((test, idx) => ({
+    ...test,
+    gtExecutionTime: gtExecutionTimes[idx]
+  }));
 
-  // Check unit test results first
+  const maxGTTime = Math.max(...gtExecutionTimes, 0);
+  console.log(`   ✅ GT measurement complete (max: ${maxGTTime.toFixed(2)}ms)`);
+
+  // Step 3: Run unit tests with dynamic time limits
+  console.log(`   [3/3] Running ${testCasesWithGTTimes.length} unit tests...`);
+  const unitTestResult = await runPythonUnitTests(code, testCasesWithGTTimes);
+
+  // Check unit test results
   if (!unitTestResult.passed) {
-    console.log(`   ❌ Unit tests failed: ${unitTestResult.passedTests}/${config.testCases.length} passed`);
+    console.log(`   ❌ Unit tests failed: ${unitTestResult.passedTests}/${testCasesWithGTTimes.length} passed`);
 
     let reason = 'Wrong Answer';
 
@@ -81,33 +87,17 @@ export async function evaluateCode(
       reason
     };
   }
-  console.log(`   ✅ All unit tests passed (${unitTestResult.passedTests}/${config.testCases.length})`);
-
-  // Check algorithm validation results
-  if (!algorithmValidation.isValid) {
-    console.log(`   ❌ Algorithm validation failed: ${algorithmValidation.reason}`);
-    return {
-      success: false,
-      grammarCheck,
-      unitTestResult,
-      algorithmValidation,
-      message: 'Wrong',
-      reason: 'Wrong Algorithm'
-    };
-  }
-  console.log(`   ✅ Algorithm validation passed: ${algorithmValidation.detectedApproach}`);
+  console.log(`   ✅ All unit tests passed (${unitTestResult.passedTests}/${testCasesWithGTTimes.length})`);
 
   // All checks passed!
   return {
     success: true,
     grammarCheck,
     unitTestResult,
-    algorithmValidation,
     message: 'Correct!'
   };
 }
 
 // Export sub-modules
 export { checkPythonGrammar, GrammarCheckResult } from './grammarChecker';
-export { runPythonUnitTests, UnitTestCase, UnitTestResult } from './unitTestRunner';
-export { validateAlgorithm, AlgorithmValidationResult } from './algorithmValidator';
+export { runPythonUnitTests, measureGTExecutionTimes, UnitTestCase, UnitTestResult } from './unitTestRunner';

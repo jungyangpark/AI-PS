@@ -65,6 +65,12 @@ except SyntaxError as e:
 
   } catch (error) {
     console.error('Failed to parse Python code:', error);
+    console.error('=== PROBLEMATIC CODE ===');
+    const lines = code.split('\n');
+    lines.forEach((line, idx) => {
+      console.error(`${idx + 1}: ${line}`);
+    });
+    console.error('=== END PROBLEMATIC CODE ===');
     // Return a basic fallback structure
     return {
       type: 'Module',

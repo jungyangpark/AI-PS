@@ -45,9 +45,10 @@ function determineBlockLevel(studentId: string, block: CodeBlock): number {
     return globalLevel;
   }
 
-  // Get minimum level from all KCs in this block
+  // Get average level from all KCs in this block (rounded)
   const levels = block.kcs.map(kc => student.kcLevels[kc.id] || 1);
-  return Math.min(...levels);
+  const average = levels.reduce((sum, level) => sum + level, 0) / levels.length;
+  return Math.round(average);
 }
 
 /**
@@ -301,7 +302,12 @@ completeRouter.post('/', async (req: Request, res: Response) => {
     const fullCode = prefix + fullCompletion;
     const prefixLineCount = prefix.split('\n').length;
 
+    console.log('=== FULL CODE FOR PARSING ===');
+    console.log(fullCode);
+    console.log('=== END FULL CODE ===');
+
     // Analyze with Code2Block
+    // LLM analyzes fullCode for accurate KC detection (needs context)
     const fullAnalysis = await code2BlockAnalyzer.analyze(fullCode);
 
     // Filter blocks that belong to the completion (startLine >= prefixLineCount)

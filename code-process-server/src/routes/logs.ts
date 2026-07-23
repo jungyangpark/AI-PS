@@ -34,6 +34,18 @@ logsRouter.post('/', (req: Request, res: Response) => {
     return;
   }
 
+  // Skip logging if assignmentId is '-' (practice/no assignment mode)
+  if (assignmentId === '-') {
+    console.log(`[Log] Skipping log save for practice mode (assignmentId: '-')`);
+    res.json({
+      status: 'ok',
+      eventsReceived: events.length,
+      sessionId,
+      skipped: true,
+    });
+    return;
+  }
+
   try {
     // Create directory structure: logs/{subjectId}/{assignmentId}/
     const assignmentDir = path.join(LOG_DIR, subjectId, assignmentId);
@@ -84,6 +96,13 @@ logsRouter.post('/codestate', (req: Request, res: Response) => {
 
   if (!subjectId || !assignmentId || !codeStateId || !fileName) {
     res.status(400).json({ error: 'Missing required fields' });
+    return;
+  }
+
+  // Skip code state save if assignmentId is '-' (practice/no assignment mode)
+  if (assignmentId === '-') {
+    console.log(`[CodeState] Skipping code state save for practice mode (assignmentId: '-')`);
+    res.json({ status: 'ok', codeStateId, skipped: true });
     return;
   }
 

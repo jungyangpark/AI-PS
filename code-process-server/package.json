@@ -4,7 +4,7 @@
   "description": "Backend server for Code Process Logger — LLM autocomplete proxy + log collection",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp src/modules/studentEvaluation/*.py dist/modules/studentEvaluation/ 2>/dev/null || tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts"
   },

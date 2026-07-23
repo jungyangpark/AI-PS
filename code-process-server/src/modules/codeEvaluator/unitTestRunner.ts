@@ -22,9 +22,66 @@ export interface UnitTestResult {
 }
 
 /**
+ * Measure GT code execution times for all test cases
+ * @param gtCodePath - Path to GT code file
+ * @param testCases - Array of test cases
+ * @returns Array of execution times in milliseconds
+ */
+export async function measureGTExecutionTimes(
+  gtCodePath: string,
+  testCases: UnitTestCase[]
+): Promise<number[]> {
+  if (!fs.existsSync(gtCodePath)) {
+    console.warn(`[GT Measurement] GT code not found: ${gtCodePath}`);
+    return testCases.map(() => 0);
+  }
+
+  console.log(`   [GT Measurement] Running GT code for ${testCases.length} test cases...`);
+
+  const gtCode = fs.readFileSync(gtCodePath, 'utf-8');
+  const executionTimes: number[] = [];
+
+  const tempDir = os.tmpdir();
+  const tempFile = path.join(tempDir, `gt_code_${Date.now()}.py`);
+
+  try {
+    const wrappedCode = wrapCodeWithTimer(gtCode);
+    fs.writeFileSync(tempFile, wrappedCode, 'utf-8');
+
+    for (let idx = 0; idx < testCases.length; idx++) {
+      const test = testCases[idx];
+      const testTimeout = 30000; // 30 seconds max for GT
+
+      try {
+        const result = await runSingleStdinTest(tempFile, test, testTimeout);
+        const executionTime = result.executionTime || 0;
+        executionTimes.push(executionTime);
+        console.log(`      → GT Test ${idx + 1}: ${executionTime.toFixed(2)}ms`);
+      } catch (error: any) {
+        console.warn(`      → GT Test ${idx + 1} failed: ${error.message}`);
+        executionTimes.push(0);
+      }
+    }
+
+    // Clean up
+    try {
+      fs.unlinkSync(tempFile);
+    } catch (err) {
+      // Ignore
+    }
+
+    return executionTimes;
+
+  } catch (error: any) {
+    console.error(`[GT Measurement] Error: ${error.message}`);
+    return testCases.map(() => 0);
+  }
+}
+
+/**
  * Runs unit tests against submitted Python code using stdin/stdout
  * @param code - The Python code to test
- * @param testCases - Array of test cases
+ * @param testCases - Array of test cases (with gtExecutionTime set)
  * @returns Promise with test results
  */
 export async function runPythonUnitTests(
@@ -54,7 +111,15 @@ export async function runPythonUnitTests(
       const test = testCases[idx];
       console.log(`      → Test ${idx + 1}/${testCases.length}: ${test.name}`);
 
-      const testTimeout = test.timeout || 5000; // default 5 seconds per test
+      // Dynamic time limit: GT execution time * 1.5, with min 1000ms and max 30000ms
+      const gtTime = test.gtExecutionTime || 0;
+      const dynamicTimeout = gtTime > 0
+        ? Math.max(1000, Math.min(30000, gtTime * 1.5))
+        : 5000; // fallback to 5 seconds if GT time not available
+
+      const testTimeout = test.timeout || dynamicTimeout;
+      console.log(`        Time limit: ${testTimeout.toFixed(0)}ms (GT: ${gtTime.toFixed(2)}ms)`);
+
 
       try {
         const result = await runSingleStdinTest(tempFile, test, testTimeout);
