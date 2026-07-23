@@ -3,7 +3,7 @@ import { code2BlockAnalyzer } from '../modules/code2block';
 import { evaluateCode } from '../modules/codeEvaluator';
 import { loadAssignmentConfig } from '../modules/assignmentConfig';
 import { updateStudentModel } from '../modules/studentEvaluation';
-import { convertBKTToKCLevels } from '../modules/studentEvaluation/kcMapping';
+import { convertBKTToKCLevels, ALL_KC_IDS } from '../modules/studentEvaluation/kcMapping';
 import fs from 'fs/promises';
 import fssync from 'fs';
 import path from 'path';
@@ -72,6 +72,74 @@ function updateStudentsKCLevels(
     }
   } catch (error) {
     console.error(`[UpdateKCLevels] Error updating KC levels:`, error);
+  }
+}
+
+/**
+ * Log student's KC levels before submission (CSV format)
+ */
+function logStudentLevelBeforeSubmission(
+  studentId: string,
+  assignmentId: string,
+  sessionId: string
+) {
+  try {
+    // Load students.json
+    if (!fssync.existsSync(STUDENTS_FILE)) {
+      console.warn(`[LogStudentLevel] students.json not found, skipping logging`);
+      return;
+    }
+
+    const students: Record<string, Student> = JSON.parse(
+      fssync.readFileSync(STUDENTS_FILE, 'utf-8')
+    );
+
+    if (!students[studentId]) {
+      console.warn(`[LogStudentLevel] Student ${studentId} not found`);
+      return;
+    }
+
+    const student = students[studentId];
+    const timestamp = new Date().toISOString();
+
+    // Prepare CSV directory
+    const studentDir = path.join(process.cwd(), 'logs', studentId);
+    if (!fssync.existsSync(studentDir)) {
+      fssync.mkdirSync(studentDir, { recursive: true });
+    }
+
+    const csvFilePath = path.join(studentDir, 'student_levels.csv');
+
+    // Build CSV row
+    const kcLevelValues = ALL_KC_IDS.map(kcId => student.kcLevels[kcId] || 2);
+    const row = [
+      timestamp,
+      studentId,
+      assignmentId,
+      sessionId,
+      ...kcLevelValues
+    ].join(',');
+
+    // Write header if file doesn't exist
+    if (!fssync.existsSync(csvFilePath)) {
+      const header = [
+        'timestamp',
+        'studentId',
+        'assignmentId',
+        'sessionId',
+        ...ALL_KC_IDS
+      ].join(',');
+      fssync.writeFileSync(csvFilePath, header + '\n' + row + '\n', 'utf-8');
+      console.log(`[LogStudentLevel] Created ${csvFilePath} with header`);
+    } else {
+      // Append to existing file
+      fssync.appendFileSync(csvFilePath, row + '\n', 'utf-8');
+    }
+
+    console.log(`[LogStudentLevel] Logged student level for ${studentId} (${assignmentId})`);
+
+  } catch (error) {
+    console.error(`[LogStudentLevel] Error logging student level:`, error);
   }
 }
 
@@ -145,6 +213,9 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     console.log(`📝 Submission from ${studentId} for ${assignmentId}`);
+
+    // Log student's KC levels before submission (for analysis)
+    logStudentLevelBeforeSubmission(studentId, assignmentId, sessionId || `${studentId}_${assignmentId}_${Date.now()}`);
 
     // Load assignment configuration
     const assignmentConfig = loadAssignmentConfig(assignmentId);
