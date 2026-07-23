@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const archiver = require('archiver');
 
 export const logsRouter = Router();
@@ -143,7 +145,11 @@ logsRouter.get('/download/:subjectId/:assignmentId', (req: Request, res: Respons
   const { subjectId, assignmentId } = req.params;
   const assignmentDir = path.join(LOG_DIR, subjectId, assignmentId);
 
+  console.log(`[Download] Request for ${subjectId}/${assignmentId}`);
+  console.log(`[Download] Looking in: ${assignmentDir}`);
+
   if (!fs.existsSync(assignmentDir)) {
+    console.error(`[Download] Directory not found: ${assignmentDir}`);
     res.status(404).json({ error: 'Assignment not found' });
     return;
   }
@@ -153,28 +159,40 @@ logsRouter.get('/download/:subjectId/:assignmentId', (req: Request, res: Respons
       zlib: { level: 9 } // Maximum compression
     });
 
-    // Set response headers
+    // Set response headers BEFORE piping
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${subjectId}_${assignmentId}.zip"`);
 
-    // Handle errors
+    // Handle errors - must be set before pipe
     archive.on('error', (err: Error) => {
-      console.error('Archive error:', err);
-      res.status(500).json({ error: 'Failed to create archive' });
+      console.error('[Download] Archive error:', err);
+      throw err; // Let catch block handle it
+    });
+
+    // Log archive events
+    archive.on('warning', (err: Error) => {
+      console.warn('[Download] Archive warning:', err);
+    });
+
+    archive.on('finish', () => {
+      console.log(`[Download] Archive finished for ${subjectId}/${assignmentId}`);
     });
 
     // Pipe archive to response
     archive.pipe(res);
 
     // Add assignment directory to archive
+    console.log(`[Download] Adding directory to archive: ${assignmentDir}`);
     archive.directory(assignmentDir, false);
 
     // Finalize archive
     archive.finalize();
 
   } catch (error: any) {
-    console.error('Download error:', error.message);
-    res.status(500).json({ error: 'Failed to download assignment logs' });
+    console.error('[Download] Error:', error.message, error.stack);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to download assignment logs', details: error.message });
+    }
   }
 });
 
@@ -183,7 +201,11 @@ logsRouter.get('/download/:subjectId', (req: Request, res: Response) => {
   const { subjectId } = req.params;
   const subjectDir = path.join(LOG_DIR, subjectId);
 
+  console.log(`[Download] Request for all assignments of ${subjectId}`);
+  console.log(`[Download] Looking in: ${subjectDir}`);
+
   if (!fs.existsSync(subjectDir)) {
+    console.error(`[Download] Directory not found: ${subjectDir}`);
     res.status(404).json({ error: 'Subject not found' });
     return;
   }
@@ -197,8 +219,16 @@ logsRouter.get('/download/:subjectId', (req: Request, res: Response) => {
     res.setHeader('Content-Disposition', `attachment; filename="${subjectId}_all_assignments.zip"`);
 
     archive.on('error', (err: Error) => {
-      console.error('Archive error:', err);
-      res.status(500).json({ error: 'Failed to create archive' });
+      console.error('[Download] Archive error:', err);
+      throw err;
+    });
+
+    archive.on('warning', (err: Error) => {
+      console.warn('[Download] Archive warning:', err);
+    });
+
+    archive.on('finish', () => {
+      console.log(`[Download] Archive finished for ${subjectId} (all assignments)`);
     });
 
     archive.pipe(res);
@@ -206,8 +236,10 @@ logsRouter.get('/download/:subjectId', (req: Request, res: Response) => {
     archive.finalize();
 
   } catch (error: any) {
-    console.error('Download error:', error.message);
-    res.status(500).json({ error: 'Failed to download subject logs' });
+    console.error('[Download] Error:', error.message, error.stack);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to download subject logs', details: error.message });
+    }
   }
 });
 
