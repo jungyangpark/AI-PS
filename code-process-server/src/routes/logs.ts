@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const archiver = require('archiver');
+const { ZipArchive } = require('archiver');
 
 export const logsRouter = Router();
 
@@ -155,7 +155,7 @@ logsRouter.get('/download/:subjectId/:assignmentId', (req: Request, res: Respons
   }
 
   try {
-    const archive = archiver('zip', {
+    const archive = new ZipArchive({
       zlib: { level: 9 } // Maximum compression
     });
 
@@ -211,7 +211,7 @@ logsRouter.get('/download/:subjectId', (req: Request, res: Response) => {
   }
 
   try {
-    const archive = archiver('zip', {
+    const archive = new ZipArchive({
       zlib: { level: 9 }
     });
 
