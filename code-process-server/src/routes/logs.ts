@@ -243,6 +243,64 @@ logsRouter.get('/download/:subjectId', (req: Request, res: Response) => {
   }
 });
 
+// GET /api/logs/files/:subjectId/:assignmentId
+// List all files in an assignment directory (without downloading)
+logsRouter.get('/files/:subjectId/:assignmentId', (req: Request, res: Response) => {
+  const { subjectId, assignmentId } = req.params;
+  const assignmentDir = path.join(LOG_DIR, subjectId, assignmentId);
+
+  console.log(`[Files] Request for ${subjectId}/${assignmentId}`);
+
+  if (!fs.existsSync(assignmentDir)) {
+    res.status(404).json({ error: 'Assignment not found' });
+    return;
+  }
+
+  try {
+    const files: any[] = [];
+
+    // Recursive function to list all files
+    function listFiles(dir: string, relativePath: string = '') {
+      const items = fs.readdirSync(dir);
+
+      for (const item of items) {
+        const fullPath = path.join(dir, item);
+        const itemRelativePath = path.join(relativePath, item);
+        const stats = fs.statSync(fullPath);
+
+        if (stats.isDirectory()) {
+          // Recursively list directory contents
+          listFiles(fullPath, itemRelativePath);
+        } else {
+          // Add file info
+          files.push({
+            path: itemRelativePath,
+            size: stats.size,
+            created: stats.birthtime,
+            modified: stats.mtime,
+            type: path.extname(item) || 'unknown'
+          });
+        }
+      }
+    }
+
+    listFiles(assignmentDir);
+
+    res.json({
+      success: true,
+      subjectId,
+      assignmentId,
+      totalFiles: files.length,
+      totalSize: files.reduce((sum, f) => sum + f.size, 0),
+      files: files.sort((a, b) => a.path.localeCompare(b.path))
+    });
+
+  } catch (error: any) {
+    console.error('[Files] Error:', error.message);
+    res.status(500).json({ error: 'Failed to list files', details: error.message });
+  }
+});
+
 // List all subjects
 logsRouter.get('/subjects', (req: Request, res: Response) => {
   if (!fs.existsSync(LOG_DIR)) {
