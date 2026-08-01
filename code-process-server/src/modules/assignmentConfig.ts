@@ -9,6 +9,8 @@ export interface AssignmentConfig {
   testCases: CodeEvaluationConfig['testCases'];
   gtCodePath: string; // Path to GT code file
   expectedComplexity: string;
+  expectedSpaceComplexity?: string; // Optional space complexity
+  validateSpaceComplexity?: boolean; // Whether to validate space complexity (default: false)
   kcs: string[]; // Knowledge Components for this assignment
 }
 

@@ -12,6 +12,8 @@ interface Student {
   passwordHash: string | null;
   level: number;
   kcLevels: Record<string, number>;
+  fixedLevel?: number;
+  locked?: boolean;
   createdAt: string;
   lastLoginAt: string | null;
 }

@@ -19,27 +19,33 @@ export interface UnitTestResult {
   errors: string[];
   executionTimes: number[]; // Student execution time for each test in ms
   gtExecutionTimes: number[]; // GT execution time for each test in ms
+  memoryUsages: number[]; // Student peak memory usage for each test in bytes
+  gtMemoryUsages: number[]; // GT peak memory usage for each test in bytes
 }
 
 /**
- * Measure GT code execution times for all test cases
+ * Measure GT code execution times and memory usage for all test cases
  * @param gtCodePath - Path to GT code file
  * @param testCases - Array of test cases
- * @returns Array of execution times in milliseconds
+ * @returns Object with execution times and memory usages
  */
 export async function measureGTExecutionTimes(
   gtCodePath: string,
   testCases: UnitTestCase[]
-): Promise<number[]> {
+): Promise<{ executionTimes: number[]; memoryUsages: number[] }> {
   if (!fs.existsSync(gtCodePath)) {
     console.warn(`[GT Measurement] GT code not found: ${gtCodePath}`);
-    return testCases.map(() => 0);
+    return {
+      executionTimes: testCases.map(() => 0),
+      memoryUsages: testCases.map(() => 0)
+    };
   }
 
   console.log(`   [GT Measurement] Running GT code for ${testCases.length} test cases...`);
 
   const gtCode = fs.readFileSync(gtCodePath, 'utf-8');
   const executionTimes: number[] = [];
+  const memoryUsages: number[] = [];
 
   const tempDir = os.tmpdir();
   const tempFile = path.join(tempDir, `gt_code_${Date.now()}.py`);
@@ -55,11 +61,14 @@ export async function measureGTExecutionTimes(
       try {
         const result = await runSingleStdinTest(tempFile, test, testTimeout);
         const executionTime = result.executionTime || 0;
+        const peakMemory = result.peakMemory || 0;
         executionTimes.push(executionTime);
-        console.log(`      → GT Test ${idx + 1}: ${executionTime.toFixed(2)}ms`);
+        memoryUsages.push(peakMemory);
+        console.log(`      → GT Test ${idx + 1}: ${executionTime.toFixed(2)}ms, ${(peakMemory / 1024).toFixed(2)}KB`);
       } catch (error: any) {
         console.warn(`      → GT Test ${idx + 1} failed: ${error.message}`);
         executionTimes.push(0);
+        memoryUsages.push(0);
       }
     }
 
@@ -70,11 +79,14 @@ export async function measureGTExecutionTimes(
       // Ignore
     }
 
-    return executionTimes;
+    return { executionTimes, memoryUsages };
 
   } catch (error: any) {
     console.error(`[GT Measurement] Error: ${error.message}`);
-    return testCases.map(() => 0);
+    return {
+      executionTimes: testCases.map(() => 0),
+      memoryUsages: testCases.map(() => 0)
+    };
   }
 }
 
@@ -95,7 +107,9 @@ export async function runPythonUnitTests(
     failedTests: [],
     errors: [],
     executionTimes: [],
-    gtExecutionTimes: []
+    gtExecutionTimes: [],
+    memoryUsages: [],
+    gtMemoryUsages: []
   };
 
   const tempDir = os.tmpdir();
@@ -124,8 +138,11 @@ export async function runPythonUnitTests(
       try {
         const result = await runSingleStdinTest(tempFile, test, testTimeout);
         const executionTime = result.executionTime || 0;
+        const peakMemory = result.peakMemory || 0;
         results.executionTimes.push(executionTime);
         results.gtExecutionTimes.push(test.gtExecutionTime || 0);
+        results.memoryUsages.push(peakMemory);
+        results.gtMemoryUsages.push(0); // Will be populated later if needed
 
         if (result.success && result.output !== undefined) {
           // Compare output (trim whitespace for comparison)
@@ -178,19 +195,24 @@ export async function runPythonUnitTests(
       failedTests: testCases,
       errors: [`Error preparing tests: ${error.message}`],
       executionTimes: [],
-      gtExecutionTimes: []
+      gtExecutionTimes: [],
+      memoryUsages: [],
+      gtMemoryUsages: []
     };
   }
 }
 
 /**
- * Wraps Python code with execution time measurement
- * Time is measured internally in Python and output to stderr
+ * Wraps Python code with execution time and memory measurement
+ * Time and memory are measured internally in Python and output to stderr
  */
 function wrapCodeWithTimer(code: string): string {
   return `import time
 import sys
+import tracemalloc
 
+# Start memory tracking
+tracemalloc.start()
 __start_time__ = time.perf_counter()
 
 # ===== Student code starts here =====
@@ -198,7 +220,11 @@ ${code}
 # ===== Student code ends here =====
 
 __end_time__ = time.perf_counter()
+__current_mem__, __peak_mem__ = tracemalloc.get_traced_memory()
+tracemalloc.stop()
+
 sys.stderr.write(f"__EXECUTION_TIME__:{(__end_time__ - __start_time__) * 1000}\\n")
+sys.stderr.write(f"__PEAK_MEMORY__:{__peak_mem__}\\n")
 sys.stderr.flush()
 `;
 }
@@ -210,7 +236,7 @@ function runSingleStdinTest(
   scriptPath: string,
   testCase: UnitTestCase,
   timeout: number
-): Promise<{ success: boolean; output?: string; executionTime?: number; error?: string }> {
+): Promise<{ success: boolean; output?: string; executionTime?: number; peakMemory?: number; error?: string }> {
   return new Promise((resolve) => {
     const pythonProcess = spawn('python3', ['-u', scriptPath]);
 
@@ -261,14 +287,21 @@ function runSingleStdinTest(
         return;
       }
 
-      // Extract execution time from stderr
+      // Extract execution time and peak memory from stderr
       let executionTime = 0;
+      let peakMemory = 0;
       let cleanedStderr = stderr;
+
       const timeMatch = stderr.match(/__EXECUTION_TIME__:([\d.]+)/);
       if (timeMatch) {
         executionTime = parseFloat(timeMatch[1]);
-        // Remove time marker from stderr
-        cleanedStderr = stderr.replace(/__EXECUTION_TIME__:[\d.]+\n?/, '');
+        cleanedStderr = cleanedStderr.replace(/__EXECUTION_TIME__:[\d.]+\n?/, '');
+      }
+
+      const memoryMatch = stderr.match(/__PEAK_MEMORY__:([\d.]+)/);
+      if (memoryMatch) {
+        peakMemory = parseFloat(memoryMatch[1]);
+        cleanedStderr = cleanedStderr.replace(/__PEAK_MEMORY__:[\d.]+\n?/, '');
       }
 
       if (exitCode !== 0) {
@@ -282,7 +315,8 @@ function runSingleStdinTest(
       resolve({
         success: true,
         output: stdout,
-        executionTime
+        executionTime,
+        peakMemory
       });
     });
 

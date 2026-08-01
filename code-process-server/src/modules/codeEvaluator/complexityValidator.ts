@@ -9,6 +9,15 @@ export interface ComplexityValidationResult {
   reason?: string;
 }
 
+export interface SpaceComplexityValidationResult {
+  isValid: boolean;
+  detectedComplexity: TimeComplexity | 'Unknown';
+  expectedComplexity: TimeComplexity;
+  reason?: string;
+  avgRatio?: number;
+  maxRatio?: number;
+}
+
 /**
  * Validates time complexity by comparing student execution times with GT times
  * @param testResult - Results from unit tests with execution times
@@ -189,6 +198,92 @@ function detectComplexity(sizes: number[], times: number[]): TimeComplexity | 'U
   }
 
   return 'Unknown';
+}
+
+/**
+ * Validates space complexity by comparing student memory usage with GT memory usage
+ * @param testResult - Results from unit tests with memory usages
+ * @param expectedComplexity - The expected space complexity
+ * @param inputSizes - Array of input sizes corresponding to test cases
+ * @returns Validation result
+ */
+export function validateSpaceComplexity(
+  testResult: UnitTestResult,
+  expectedComplexity: TimeComplexity,
+  inputSizes: number[]
+): SpaceComplexityValidationResult {
+
+  if (!testResult.passed) {
+    return {
+      isValid: false,
+      detectedComplexity: 'Unknown',
+      expectedComplexity,
+      reason: 'Cannot validate space complexity - tests did not pass'
+    };
+  }
+
+  const studentMemory = testResult.memoryUsages;
+  const gtMemory = testResult.gtMemoryUsages;
+
+  if (studentMemory.length < 3) {
+    return {
+      isValid: false,
+      detectedComplexity: 'Unknown',
+      expectedComplexity,
+      reason: 'Insufficient test cases to determine space complexity (need at least 3)'
+    };
+  }
+
+  if (!gtMemory || gtMemory.length === 0 || gtMemory.every(m => m === 0)) {
+    // No GT memory data - cannot validate
+    console.log('[Space Complexity] No GT memory data available, skipping validation');
+    return {
+      isValid: true, // Pass by default if no GT data
+      detectedComplexity: expectedComplexity,
+      expectedComplexity,
+      reason: 'No GT memory data available for comparison'
+    };
+  }
+
+  // Compare student memory with GT memory
+  // Filter out very small memory (<1KB) as they are unreliable for ratio comparison
+  const reliableIndices = gtMemory
+    .map((mem, idx) => ({ mem, idx }))
+    .filter(({ mem }) => mem >= 1024) // At least 1KB
+    .map(({ idx }) => idx);
+
+  // If no reliable memory measurements, use all
+  const indicesToUse = reliableIndices.length >= 2 ? reliableIndices : studentMemory.map((_, idx) => idx);
+
+  const memoryRatios = indicesToUse.map(idx => {
+    const studentMem = studentMemory[idx];
+    const gtMem = gtMemory[idx];
+    if (gtMem === 0) return 1;
+    return studentMem / gtMem;
+  });
+
+  // Check if student uses significantly more memory than GT
+  const maxRatio = Math.max(...memoryRatios);
+  const avgRatio = memoryRatios.reduce((sum, r) => sum + r, 0) / memoryRatios.length;
+
+  // More lenient thresholds for memory: allow up to 5x more on average, 10x on max
+  // (Memory usage can vary more than execution time due to Python interpreter overhead)
+  const isValid = maxRatio <= 10.0 && avgRatio <= 5.0;
+
+  const detectedComplexity = isValid
+    ? expectedComplexity
+    : 'Excessive memory usage (likely different algorithm)';
+
+  return {
+    isValid,
+    detectedComplexity: detectedComplexity as any,
+    expectedComplexity,
+    avgRatio,
+    maxRatio,
+    reason: isValid
+      ? undefined
+      : `Code uses significantly more memory than GT (avg: ${avgRatio.toFixed(2)}x, max: ${maxRatio.toFixed(2)}x)`
+  };
 }
 
 /**

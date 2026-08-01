@@ -3,8 +3,10 @@ import { runPythonUnitTests, UnitTestCase, UnitTestResult, measureGTExecutionTim
 
 export interface CodeEvaluationConfig {
   testCases: UnitTestCase[];
-  gtCodePath: string; // Path to GT code for time measurement
+  gtCodePath: string; // Path to GT code for time/memory measurement
   expectedComplexity: string; // Expected time complexity (for reference)
+  expectedSpaceComplexity?: string; // Expected space complexity (optional)
+  validateSpaceComplexity?: boolean; // Whether to validate space complexity
   kcs: string[]; // Knowledge Components to check
 }
 
@@ -46,22 +48,26 @@ export async function evaluateCode(
   }
   console.log('   ✅ Grammar check passed');
 
-  // Step 2: Measure GT code execution times
-  console.log('   [2/3] Measuring GT code execution times...');
-  const gtExecutionTimes = await measureGTExecutionTimes(config.gtCodePath, config.testCases);
+  // Step 2: Measure GT code execution times and memory usage
+  console.log('   [2/3] Measuring GT code execution times and memory...');
+  const gtMeasurement = await measureGTExecutionTimes(config.gtCodePath, config.testCases);
 
   // Set GT times in test cases for dynamic timeout calculation
   const testCasesWithGTTimes = config.testCases.map((test, idx) => ({
     ...test,
-    gtExecutionTime: gtExecutionTimes[idx]
+    gtExecutionTime: gtMeasurement.executionTimes[idx]
   }));
 
-  const maxGTTime = Math.max(...gtExecutionTimes, 0);
-  console.log(`   ✅ GT measurement complete (max: ${maxGTTime.toFixed(2)}ms)`);
+  const maxGTTime = Math.max(...gtMeasurement.executionTimes, 0);
+  const maxGTMemory = Math.max(...gtMeasurement.memoryUsages, 0);
+  console.log(`   ✅ GT measurement complete (max time: ${maxGTTime.toFixed(2)}ms, max memory: ${(maxGTMemory / 1024).toFixed(2)}KB)`);
 
   // Step 3: Run unit tests with dynamic time limits
   console.log(`   [3/3] Running ${testCasesWithGTTimes.length} unit tests...`);
   const unitTestResult = await runPythonUnitTests(code, testCasesWithGTTimes);
+
+  // Set GT memory usages for space complexity validation
+  unitTestResult.gtMemoryUsages = gtMeasurement.memoryUsages;
 
   // Check unit test results
   if (!unitTestResult.passed) {

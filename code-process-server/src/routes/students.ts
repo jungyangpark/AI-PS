@@ -17,6 +17,8 @@ interface Student {
   passwordHash: string | null;  // null = first login, needs to set password
   level: number;                // 1, 2, or 3 (deprecated, kept for backward compatibility)
   kcLevels: Record<string, number>; // KC_ID -> level (1/2/3)
+  fixedLevel?: number;          // If set, all KC levels are fixed to this value (1/2/3)
+  locked?: boolean;             // If true, BKT updates are skipped (keeps current levels)
   createdAt: string;
   lastLoginAt: string | null;
 }
@@ -258,6 +260,86 @@ studentsRouter.get('/:id/kc-levels', (req: Request, res: Response) => {
   }
 
   res.json({ studentId: id, kcLevels: students[id].kcLevels });
+});
+
+// POST /api/students/:id/fix-level — fix student level (for control group)
+studentsRouter.post('/:id/fix-level', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { level } = req.body as { level: number | null };
+
+  // level can be 1, 2, 3, or null (to unfix)
+  if (level !== null && (level < 1 || level > 3)) {
+    res.status(400).json({ error: 'level must be 1, 2, 3, or null to unfix' });
+    return;
+  }
+
+  const students = loadStudents();
+  if (!students[id]) {
+    res.status(404).json({ error: 'Student not found' });
+    return;
+  }
+
+  if (level === null) {
+    // Unfix level
+    delete students[id].fixedLevel;
+    console.log(`[Fix Level] Student ${id}: level unfixed (dynamic BKT)`);
+  } else {
+    // Fix all KC levels to specified level
+    students[id].fixedLevel = level;
+    for (const kc in students[id].kcLevels) {
+      students[id].kcLevels[kc] = level;
+    }
+    console.log(`[Fix Level] Student ${id}: all KC levels fixed to ${level}`);
+  }
+
+  saveStudents(students);
+  res.json({
+    studentId: id,
+    fixedLevel: students[id].fixedLevel || null,
+    kcLevels: students[id].kcLevels
+  });
+});
+
+// POST /api/students/:id/lock — lock student (skip BKT updates, keep current levels)
+studentsRouter.post('/:id/lock', (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const students = loadStudents();
+  if (!students[id]) {
+    res.status(404).json({ error: 'Student not found' });
+    return;
+  }
+
+  students[id].locked = true;
+  saveStudents(students);
+
+  console.log(`[Lock] Student ${id}: locked (BKT updates disabled)`);
+  res.json({
+    studentId: id,
+    locked: true,
+    kcLevels: students[id].kcLevels
+  });
+});
+
+// POST /api/students/:id/unlock — unlock student (enable BKT updates)
+studentsRouter.post('/:id/unlock', (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const students = loadStudents();
+  if (!students[id]) {
+    res.status(404).json({ error: 'Student not found' });
+    return;
+  }
+
+  students[id].locked = false;
+  saveStudents(students);
+
+  console.log(`[Unlock] Student ${id}: unlocked (BKT updates enabled)`);
+  res.json({
+    studentId: id,
+    locked: false,
+    kcLevels: students[id].kcLevels
+  });
 });
 
 /**

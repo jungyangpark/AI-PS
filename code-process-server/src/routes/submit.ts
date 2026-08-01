@@ -26,6 +26,8 @@ interface Student {
   passwordHash: string | null;
   level: number;
   kcLevels: Record<string, number>;
+  fixedLevel?: number;
+  locked?: boolean;
   createdAt: string;
   lastLoginAt: string | null;
 }
@@ -53,6 +55,18 @@ function updateStudentsKCLevels(
 
     if (!students[studentId]) {
       console.warn(`[UpdateKCLevels] Student ${studentId} not found in students.json`);
+      return;
+    }
+
+    // Check if student has fixed level (control group)
+    if (students[studentId].fixedLevel !== undefined) {
+      console.log(`[UpdateKCLevels] Student ${studentId} has fixed level ${students[studentId].fixedLevel}, skipping BKT update`);
+      return;
+    }
+
+    // Check if student is locked (temporarily skip BKT updates)
+    if (students[studentId].locked === true) {
+      console.log(`[UpdateKCLevels] Student ${studentId} is locked, skipping BKT update`);
       return;
     }
 

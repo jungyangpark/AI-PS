@@ -14,6 +14,8 @@ interface RegisterAssignmentRequest {
   testInputs: string[]; // Array of input strings
   inputSizes: number[]; // Corresponding input sizes for complexity testing
   expectedComplexity?: TimeComplexity; // e.g., "O(n^2)"
+  expectedSpaceComplexity?: TimeComplexity; // e.g., "O(n)"
+  validateSpaceComplexity?: boolean; // Whether to validate space complexity (default: false)
   kcs?: string[]; // Knowledge components
 }
 
@@ -30,6 +32,8 @@ router.post('/register', async (req: Request, res: Response) => {
       testInputs,
       inputSizes,
       expectedComplexity,
+      expectedSpaceComplexity,
+      validateSpaceComplexity,
       kcs
     }: RegisterAssignmentRequest = req.body;
 
@@ -92,6 +96,8 @@ router.post('/register', async (req: Request, res: Response) => {
       testCases,
       gtCodePath, // Store GT code path for algorithm validation
       expectedComplexity: expectedComplexity || 'O(n)',
+      expectedSpaceComplexity: expectedSpaceComplexity,
+      validateSpaceComplexity: validateSpaceComplexity || false,
       kcs: kcs || []
     };
 
