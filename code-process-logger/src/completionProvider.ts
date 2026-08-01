@@ -91,6 +91,11 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     // This happens when user presses Enter multiple times in blank lines
     displayCompletion = displayCompletion.replace(/^\n+/, '');
 
+    // Level 3: Add [tab] prefix to ghost text
+    if (this.level === 3 && displayCompletion.length > 0) {
+      displayCompletion = '[tab] ' + displayCompletion;
+    }
+
     if (displayCompletion.length > 0) {
       this.logToFile('provideInlineCompletionItems', {
         returning: true,
@@ -549,9 +554,23 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
         wasQuestionMode
       });
 
-      // Accept the inline suggestion
+      // Level 3: Save cursor position BEFORE accepting (this is where "[tab] " will be inserted)
+      const prefixStartPosition = editor.selection.active;
+      console.log(`🔵 [TAB] Cursor position before commit: ${prefixStartPosition.line}:${prefixStartPosition.character}`);
+
+      // Accept the inline suggestion (includes "[tab] " prefix)
       console.log(`🔵 [TAB] Committing inline suggestion...`);
       await vscode.commands.executeCommand('editor.action.inlineSuggest.commit');
+
+      // Level 3: Immediately remove "[tab] " prefix
+      await editor.edit(editBuilder => {
+        const prefixRange = new vscode.Range(
+          prefixStartPosition,
+          prefixStartPosition.translate(0, '[tab] '.length)
+        );
+        editBuilder.delete(prefixRange);
+      }, { undoStopBefore: false, undoStopAfter: false });
+      console.log(`🔵 [TAB] Prefix removed immediately`);
 
       // Level 3: Log Accept event (Tab pressed to accept)
       if (this.onLogEventCallback) {
