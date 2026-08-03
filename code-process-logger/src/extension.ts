@@ -28,6 +28,10 @@ let originalWordBasedSuggestions: string | undefined;
 let originalInlineSuggest: boolean | undefined;
 let originalAutoIndent: string | undefined;
 let originalInlineSuggestShowToolbar: string | undefined;
+let originalFormatOnSave: boolean | undefined;
+let originalPrettierEnable: boolean | undefined;
+let originalTabnineDisableAutoUpdate: boolean | undefined;
+let originalIntelliCodeSuggestSelection: string | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
   // Status bar item
@@ -653,8 +657,22 @@ async function setAssignmentId(context: vscode.ExtensionContext): Promise<void> 
         if (completionProvider) {
           completionProvider.setEnabled(true);
           updateStatusBar(true, true, 'autocomplete');
+
+          // Wait 5 seconds, then force trigger if no input detected
+          setTimeout(() => {
+            if (completionProvider && completionProvider.isEnabled()) {
+              // Check if there's already a completion cached
+              const hasCompletion = completionProvider.getOriginalCompletion();
+              if (!hasCompletion) {
+                console.log('🔄 [ASSIGNMENT] 5 seconds elapsed with no input - force triggering first completion');
+                completionProvider.triggerCompletion(false);
+              } else {
+                console.log('🔄 [ASSIGNMENT] Completion already cached, skipping force trigger');
+              }
+            }
+          }, 5000);
         }
-      }, 100);
+      }, 300);
       vscode.window.showInformationMessage(`Assignment ID set to: ${trimmedId}. Autocomplete will be enabled.`);
     } else {
       vscode.window.showInformationMessage(`Assignment ID reset. Autocomplete disabled.`);
@@ -666,11 +684,12 @@ let currentLevel: number = 0;
 
 function updateStatusBar(active: boolean, autocompleteOn?: boolean, mode?: 'question' | 'autocomplete'): void {
   if (active) {
-    // Session active: simple status
-    statusBarItem.text = '$(check) AI-PS: Active';
+    // Session active: show student ID
+    const studentId = currentSubjectId || '-';
+    statusBarItem.text = `$(check) AI-PS: ${studentId}`;
     statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.prominentBackground');
     statusBarItem.command = 'codeProcessLogger.stopSession';
-    statusBarItem.tooltip = 'Session active — Click to stop';
+    statusBarItem.tooltip = `Session active (Student: ${studentId}, Assignment: ${currentAssignmentId || '-'}) — Click to stop`;
   } else {
     // Session inactive
     statusBarItem.text = '$(circle-outline) AI-PS: Idle';
@@ -729,6 +748,43 @@ async function disableExternalAutocomplete(): Promise<void> {
     await copilotConfig.update('enable', { '*': false }, vscode.ConfigurationTarget.Workspace);
   } catch { /* Copilot not installed */ }
 
+  // Disable Prettier and formatOnSave
+  originalFormatOnSave = editorConfig.get<boolean>('formatOnSave');
+  await editorConfig.update('formatOnSave', false, vscode.ConfigurationTarget.Workspace);
+
+  try {
+    const prettierConfig = vscode.workspace.getConfiguration('prettier');
+    originalPrettierEnable = prettierConfig.get<boolean>('enable');
+    await prettierConfig.update('enable', false, vscode.ConfigurationTarget.Workspace);
+  } catch { /* Prettier not installed */ }
+
+  // Disable Tabnine
+  try {
+    const tabnineConfig = vscode.workspace.getConfiguration('tabnine');
+    originalTabnineDisableAutoUpdate = tabnineConfig.get<boolean>('disable_auto_update');
+    await tabnineConfig.update('experimentalAutoImports', false, vscode.ConfigurationTarget.Workspace);
+    await tabnineConfig.update('disableLineRegex', true, vscode.ConfigurationTarget.Workspace);
+  } catch { /* Tabnine not installed */ }
+
+  // Disable IntelliCode
+  try {
+    const intelliCodeConfig = vscode.workspace.getConfiguration('vsintellicode');
+    originalIntelliCodeSuggestSelection = intelliCodeConfig.get<string>('modify.editor.suggestSelection');
+    await intelliCodeConfig.update('modify.editor.suggestSelection', 'automaticallyOverrodeDefaultValue', vscode.ConfigurationTarget.Workspace);
+  } catch { /* IntelliCode not installed */ }
+
+  // Disable AWS CodeWhisperer
+  try {
+    const awsConfig = vscode.workspace.getConfiguration('aws');
+    await awsConfig.update('codeWhisperer.shareCodeWhispererContentWithAWS', false, vscode.ConfigurationTarget.Workspace);
+  } catch { /* AWS Toolkit not installed */ }
+
+  // Disable Kite
+  try {
+    const kiteConfig = vscode.workspace.getConfiguration('kite');
+    await kiteConfig.update('showWelcomeNotificationOnStartup', false, vscode.ConfigurationTarget.Workspace);
+  } catch { /* Kite not installed */ }
+
   // Disable all inline completion providers except ours
   await editorConfig.update('inlineSuggest.suppressSuggestions', false, vscode.ConfigurationTarget.Workspace);
 }
@@ -747,6 +803,39 @@ async function restoreExternalAutocomplete(): Promise<void> {
   await editorConfig.update('autoSurround', undefined, vscode.ConfigurationTarget.Workspace);
   await editorConfig.update('autoIndent', undefined, vscode.ConfigurationTarget.Workspace);
   await editorConfig.update('formatOnType', undefined, vscode.ConfigurationTarget.Workspace);
+
+  // Restore formatOnSave and Prettier
+  await editorConfig.update('formatOnSave', originalFormatOnSave, vscode.ConfigurationTarget.Workspace);
+
+  try {
+    const prettierConfig = vscode.workspace.getConfiguration('prettier');
+    await prettierConfig.update('enable', originalPrettierEnable, vscode.ConfigurationTarget.Workspace);
+  } catch { /* Prettier not installed */ }
+
+  // Restore Tabnine
+  try {
+    const tabnineConfig = vscode.workspace.getConfiguration('tabnine');
+    await tabnineConfig.update('experimentalAutoImports', undefined, vscode.ConfigurationTarget.Workspace);
+    await tabnineConfig.update('disableLineRegex', undefined, vscode.ConfigurationTarget.Workspace);
+  } catch { /* Tabnine not installed */ }
+
+  // Restore IntelliCode
+  try {
+    const intelliCodeConfig = vscode.workspace.getConfiguration('vsintellicode');
+    await intelliCodeConfig.update('modify.editor.suggestSelection', originalIntelliCodeSuggestSelection, vscode.ConfigurationTarget.Workspace);
+  } catch { /* IntelliCode not installed */ }
+
+  // Restore AWS CodeWhisperer
+  try {
+    const awsConfig = vscode.workspace.getConfiguration('aws');
+    await awsConfig.update('codeWhisperer.shareCodeWhispererContentWithAWS', undefined, vscode.ConfigurationTarget.Workspace);
+  } catch { /* AWS Toolkit not installed */ }
+
+  // Restore Kite
+  try {
+    const kiteConfig = vscode.workspace.getConfiguration('kite');
+    await kiteConfig.update('showWelcomeNotificationOnStartup', undefined, vscode.ConfigurationTarget.Workspace);
+  } catch { /* Kite not installed */ }
 
   try {
     const cursorCppConfig = vscode.workspace.getConfiguration('cursor.cpp');

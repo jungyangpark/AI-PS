@@ -120,7 +120,10 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
   }
 
   async triggerCompletion(questionMode: boolean = false): Promise<void> {
-    console.log(`🔵 [CLIENT] triggerCompletion called: questionMode=${questionMode}, requestNextBlock=${this.shouldRequestNextLine}`);
+    // Save requestNextBlock flag before it gets reset in fetchCompletion()
+    const isRequestNextBlock = this.shouldRequestNextLine;
+
+    console.log(`🔵 [CLIENT] triggerCompletion called: questionMode=${questionMode}, requestNextBlock=${isRequestNextBlock}`);
     this.logToFile('triggerCompletion', { started: true, questionMode });
     this.isQuestionMode = questionMode;
 
