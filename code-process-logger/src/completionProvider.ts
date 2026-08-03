@@ -21,8 +21,17 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
   private matchedChars: number = 0;
   private currentLineCompleted: boolean = false; // Track if current line is fully typed (waiting for Enter)
   private shouldRequestNextLine: boolean = false; // Track if we should request next line from server
-  private shouldClearCache: boolean = false; // Flag to clear cache on next request
+  private _shouldClearCache: boolean = false; // Flag to clear cache on next request
   private waitingForEnterAfterLevel2: boolean = false; // Level 2: wait for Enter before re-enabling
+
+  private get shouldClearCache(): boolean {
+    return this._shouldClearCache;
+  }
+
+  private set shouldClearCache(value: boolean) {
+    console.log(`🔍 [CACHE] shouldClearCache: ${this._shouldClearCache} → ${value} (called from ${new Error().stack?.split('\n')[2]?.trim()})`);
+    this._shouldClearCache = value;
+  }
 
   private disposables: vscode.Disposable[] = [];
   private onDisableCallback: (() => void) | undefined;
@@ -300,6 +309,7 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
   ): Promise<string | null> {
     return new Promise((resolve) => {
       const requestNextBlock = this.shouldRequestNextLine;
+      const clearCacheFlag = this.shouldClearCache;
       const body = JSON.stringify({
         prefix: prefix.slice(-2000),  // 원래대로 복구
         suffix: suffix.slice(0, 500),  // 원래대로 복구
@@ -310,10 +320,10 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
         sessionId: this.sessionId,
         questionMode,
         requestNextBlock,
-        clearCache: this.shouldClearCache,
+        clearCache: clearCacheFlag,
       });
 
-      console.log(`🔵 [CLIENT] Fetching completion: requestNextBlock=${requestNextBlock}`);
+      console.log(`🔵 [CLIENT] Fetching completion: requestNextBlock=${requestNextBlock}, clearCache=${clearCacheFlag}`);
 
       // Reset flags after building request body
       if (this.shouldClearCache) {
@@ -387,7 +397,12 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
               // Check if all blocks completed - disable autocomplete to trigger fresh request after idle
               if (json.allBlocksCompleted) {
                 console.log(`🔵 [CLIENT] All blocks completed - disabling autocomplete for new context`);
-                this.shouldClearCache = true;
+
+                // Only set shouldClearCache if this was NOT a requestNextBlock request
+                // (if it was requestNextBlock, we're just at the end of the cache, don't clear it)
+                if (!requestNextBlock) {
+                  this.shouldClearCache = true;
+                }
                 this.currentLineCompleted = false;
 
                 // Clear cache and disable autocomplete
@@ -468,6 +483,17 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
 
   setAssignmentId(assignmentId: string): void {
     this.assignmentId = assignmentId;
+
+    // Reset all state flags when assignment changes (enabled is managed by extension.ts)
+    this.waitingForEnterAfterLevel2 = false;
+    this.currentLineCompleted = false;
+    this.shouldRequestNextLine = false;
+    this.shouldClearCache = true; // Clear cache for new assignment
+    this.cachedCompletion = '';
+    this.cachedPosition = undefined;
+    this.matchedChars = 0;
+
+    console.log(`🔄 [ASSIGNMENT] Assignment set to "${assignmentId}", all state reset`);
   }
 
   setSessionId(sessionId: string): void {
@@ -581,10 +607,15 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       console.log(`🔵 [TAB] Clearing ghost...`);
       await this.clearGhost();
 
-      // Mark line as completed, wait for Enter to request next line
+      // Immediately request next line from cache
       this.currentLineCompleted = true;
-      console.log(`🔵 [TAB] Line completed, waiting for Enter to request next line`);
-      this.logToFile('handleTabPress', { accepted: true, waitingForEnter: true });
+      this.shouldRequestNextLine = true; // Set flag to request next block
+      this.shouldClearCache = false; // Don't clear cache when requesting next line
+      console.log(`🔵 [TAB] Line completed, requesting next line from cache`);
+      this.logToFile('handleTabPress', { accepted: true, requestingNextLine: true });
+
+      // Request next block from cache (no LLM call needed)
+      await this.triggerCompletion(false); // questionMode=false
     }
   }
 

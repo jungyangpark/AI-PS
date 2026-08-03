@@ -225,7 +225,7 @@ ${code}
 1. Analyze EACH LINE separately
 2. For each non-empty line, identify all KCs used in that line
 3. Skip empty lines or comment-only lines
-4. Return a JSON array where each object has: line number, code string, and KC names array
+4. Return a JSON array where each object has: line number (starting from 1), code string, and KC names array
 5. DO NOT include explanations, markdown, or any other text
 
 **Output format (JSON array only):**
@@ -264,10 +264,6 @@ function extractLineKCMappings(response: Anthropic.Message): LineKCMapping[] {
 
     let text = block.text.trim();
 
-    console.log('[LLM KC Mapper] === RAW LLM RESPONSE ===');
-    console.log(text);
-    console.log('[LLM KC Mapper] === END RAW RESPONSE ===');
-
     // Remove markdown code blocks if present
     text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '');
 
@@ -278,8 +274,6 @@ function extractLineKCMappings(response: Anthropic.Message): LineKCMapping[] {
       console.warn('[LLM KC Mapper] Response is not an array:', text);
       return [];
     }
-
-    console.log(`[LLM KC Mapper] Parsed ${parsed.length} items from LLM response`);
 
     // Validate each line mapping
     const validMappings: LineKCMapping[] = parsed
@@ -323,6 +317,48 @@ function extractLineKCMappings(response: Anthropic.Message): LineKCMapping[] {
  * @param code - Python code to analyze
  * @returns Array of line-level KC mappings
  */
+/**
+ * Remove leading docstring from code
+ * Returns cleaned code and the line offset
+ */
+function removeLeadingDocstring(code: string): { cleanedCode: string; lineOffset: number } {
+  const lines = code.split('\n');
+
+  // Find first occurrence of """
+  let docstringStart = -1;
+  let docstringEnd = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith('"""') || trimmed.startsWith("'''")) {
+      if (docstringStart === -1) {
+        docstringStart = i;
+        // Check if docstring ends on same line
+        const quote = trimmed.startsWith('"""') ? '"""' : "'''";
+        const afterQuote = trimmed.substring(3);
+        if (afterQuote.includes(quote)) {
+          docstringEnd = i;
+          break;
+        }
+      } else {
+        docstringEnd = i;
+        break;
+      }
+    }
+  }
+
+  // If docstring found, remove it
+  if (docstringStart !== -1 && docstringEnd !== -1) {
+    const cleanedLines = lines.slice(docstringEnd + 1);
+    const cleanedCode = cleanedLines.join('\n');
+    const lineOffset = docstringEnd + 1;
+    return { cleanedCode, lineOffset };
+  }
+
+  // No docstring found
+  return { cleanedCode: code, lineOffset: 0 };
+}
+
 export async function analyzeCodeLineByLine(code: string): Promise<LineKCMapping[]> {
   const anthropic = getClient();
 
@@ -332,42 +368,26 @@ export async function analyzeCodeLineByLine(code: string): Promise<LineKCMapping
   }
 
   try {
-    console.log('[LLM KC Mapper] === ORIGINAL CODE ===');
-    console.log(code);
-    console.log('[LLM KC Mapper] === END ORIGINAL CODE ===');
-
-    // Preprocess: remove docstrings and comments
-    const { cleanedCode, lineMapping } = await preprocessCode(code);
-
-    console.log('[LLM KC Mapper] === CLEANED CODE (for LLM) ===');
-    console.log(cleanedCode);
-    console.log('[LLM KC Mapper] === END CLEANED CODE ===');
+    // Remove leading docstring to save tokens
+    const { cleanedCode, lineOffset } = removeLeadingDocstring(code);
 
     const prompt = buildKCDetectionPrompt(cleanedCode);
 
     const response = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 2048,  // Increased for line-by-line analysis
+      max_tokens: 2048,
       messages: [{ role: 'user', content: prompt }],
     });
 
     const lineMappingsFromLLM = extractLineKCMappings(response);
 
-    // Map cleaned line numbers back to original line numbers
-    const lineMappings: LineKCMapping[] = lineMappingsFromLLM.map(mapping => {
-      const originalLine = lineMapping.get(mapping.line) || mapping.line;
-      return {
-        ...mapping,
-        line: originalLine
-      };
-    });
+    // Add line offset to get original line numbers
+    const lineMappings = lineMappingsFromLLM.map(mapping => ({
+      ...mapping,
+      line: mapping.line + lineOffset
+    }));
 
-    console.log(`[LLM KC Mapper] Analyzed ${lineMappings.length} lines`);
-    console.log('[LLM KC Mapper] === RESULTS (with original line numbers) ===');
-    lineMappings.forEach(mapping => {
-      console.log(`  Line ${mapping.line}: "${mapping.code}" → KCs: [${mapping.kcs.join(', ')}]`);
-    });
-    console.log('[LLM KC Mapper] === END RESULTS ===');
+    console.log(`🔍 KC Analysis: ${lineMappings.length} lines (offset +${lineOffset})`);
 
     return lineMappings;
 

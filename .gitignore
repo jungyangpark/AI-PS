@@ -31,6 +31,7 @@ Thumbs.db
 *.pdf
 
 code-process-server/student_data
+code-process-server/assignments
 not_for_Git
 
 .claude/

@@ -140,12 +140,14 @@ interface CompleteRequest {
   requestNextBlock?: boolean;
   // Clear cache (student typed different code)
   clearCache?: boolean;
+  // Last accepted code (for Level 2 validation)
+  lastAcceptedCode?: string;
 }
 
 completeRouter.post('/', async (req: Request, res: Response) => {
   const {
     prefix, suffix, language, fileName, subjectId, questionMode,
-    assignmentId, sessionId, requestNextBlock, clearCache
+    assignmentId, sessionId, requestNextBlock, clearCache, lastAcceptedCode
   } = req.body as CompleteRequest;
 
 
@@ -163,6 +165,10 @@ completeRouter.post('/', async (req: Request, res: Response) => {
   const isQuestionMode = questionMode || false;
 
   try {
+    // Log key request info
+    const cacheStatus = sessionId ? (blockCache.has(sessionId) ? 'HIT' : 'MISS') : 'N/A';
+    console.log(`📥 Request: next=${requestNextBlock}, clear=${clearCache}, cache=${cacheStatus}`);
+
     // Handle cache clearing (student typed different code)
     if (clearCache && sessionId) {
       blockCache.delete(sessionId);
@@ -288,50 +294,53 @@ completeRouter.post('/', async (req: Request, res: Response) => {
       });
     }, 3);
 
-    console.log('LLM response:', JSON.stringify(response.content));
     let fullCompletion = extractCompletion(response);
-    console.log('Completion before fix:', fullCompletion);
-
-    // Fix first line based on cursor context
-    const prefixLines = prefix.split('\n');
-    const lastLine = prefixLines[prefixLines.length - 1];
-    console.log('Prefix last line:', JSON.stringify(lastLine));
     fullCompletion = fixFirstLine(prefix, fullCompletion);
-    console.log('Completion after fix:', fullCompletion);
+    console.log(`🤖 LLM completion: "${fullCompletion.substring(0, 50)}..."`);
 
-    // Analyze with Code2Block
-    // Parse full code (prefix + completion) for valid AST, but filter blocks from completion only
     const fullCode = prefix + fullCompletion;
     const prefixLineCount = prefix.split('\n').length;
 
-    console.log('=== FULL CODE FOR PARSING ===');
-    console.log(fullCode);
-    console.log('=== END FULL CODE ===');
+    // Analyze fullCode with LLM to get context-aware KC detection
+    const { analyzeCodeLineByLine } = await import('../modules/code2block/llmKcMapper');
+    const lineMappings = await analyzeCodeLineByLine(fullCode);
 
-    // Analyze with Code2Block
-    // LLM analyzes fullCode for accurate KC detection (needs context)
-    const fullAnalysis = await code2BlockAnalyzer.analyze(fullCode);
+    // Filter lines that belong to the completion
+    const completionLines = lineMappings.filter(mapping => mapping.line >= prefixLineCount);
 
-    // Filter blocks that belong to the completion (startLine >= prefixLineCount)
-    const completionBlocks = fullAnalysis.blocks.filter(block => block.startLine >= prefixLineCount);
+    // Convert line mappings to CodeBlocks
+    const lineBlocks: CodeBlock[] = completionLines.map((mapping, idx) => {
+      const { KC_NAME_TO_ID } = require('../modules/studentEvaluation/kcMapping');
+      const kcs = mapping.kcs.map(kcName => ({
+        id: KC_NAME_TO_ID[kcName] || 'KC_000',
+        name: kcName,
+        category: 'basic' as const
+      }));
 
-    let lineBlocks: CodeBlock[] = [];
+      return {
+        id: `L${idx}`,
+        code: mapping.code,
+        type: 'Line' as any,
+        startLine: mapping.line,
+        endLine: mapping.line,
+        kcs
+      };
+    });
 
-    // If parsing failed (no blocks extracted), return error to disable autocomplete
-    if (completionBlocks.length === 0) {
-      console.log('⚠️ Code2Block parsing returned no blocks (likely invalid syntax)');
-      console.log('🚫 Disabling autocomplete due to parsing failure');
+    console.log(`📊 Analyzed: ${lineBlocks.length} lines with KCs`);
+
+    // If no lines in completion, return error
+    if (lineBlocks.length === 0) {
+      console.log('⚠️ No lines found in completion portion');
+      console.log('🚫 Returning empty completion');
 
       return res.json({
         success: false,
-        error: 'PARSING_FAILED',
-        message: 'Code contains syntax errors. Autocomplete disabled.',
+        error: 'NO_COMPLETION',
+        message: 'No completion lines generated.',
         completion: ''
       });
     }
-
-    // Normal case: blocks were successfully extracted
-    lineBlocks = splitBlocksIntoLines(completionBlocks);
 
     // Store in cache if sessionId provided
     if (sessionId && assignmentId && lineBlocks.length > 0) {
@@ -522,6 +531,32 @@ function extractCompletion(response: Anthropic.Message): string {
       }
     }
 
+    // Remove inline comments from each line
+    const lines = text.split('\n');
+    const linesWithoutComments = lines.map(line => {
+      // Find # that's not inside a string
+      let inString = false;
+      let stringChar = '';
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        // Handle string delimiters
+        if ((char === '"' || char === "'") && (i === 0 || line[i - 1] !== '\\')) {
+          if (!inString) {
+            inString = true;
+            stringChar = char;
+          } else if (char === stringChar) {
+            inString = false;
+          }
+        }
+        // Found # outside of string - remove from here to end of line
+        if (char === '#' && !inString) {
+          return line.substring(0, i).trimEnd();
+        }
+      }
+      return line;
+    });
+    text = linesWithoutComments.join('\n');
+
     // Filter out meta-commentary (LLM explaining instead of coding)
     const metaPhrases = [
       'no completion needed',
@@ -579,21 +614,39 @@ function fixFirstLine(prefix: string, completion: string): string {
   const lines = completion.split('\n');
   if (lines.length === 0) { return completion; }
 
-  // Get last line from prefix (codeContext)
   const prefixLines = prefix.split('\n');
   const lastLine = prefixLines[prefixLines.length - 1];
 
-  // If prefix last line has only spaces (indent only, not completely empty), remove leading spaces from first line
-  // Example: lastLine = "        " (8 spaces), completion = "        return [...]"
-  // → Remove leading spaces to avoid double indent
+  // Case 1: Cursor is at indent-only line (e.g., "    " or "        ")
+  // Remove leading spaces from completion to avoid double indent
   if (lastLine !== '' && lastLine.trim() === '') {
-    // Cursor is at indent-only line - remove leading spaces from first line only
     const firstLineWithoutSpaces = lines[0].trimStart();
     const restLines = lines.slice(1).join('\n');
     return restLines ? `${firstLineWithoutSpaces}\n${restLines}` : firstLineWithoutSpaces;
   }
 
-  // If prefix last line has code, keep completion as-is
+  // Case 2: Cursor is on empty line after ':' (function/class/if/for/while)
+  // Find last non-empty line to check if it ends with ':'
+  if (lastLine === '' && prefixLines.length > 1) {
+    for (let i = prefixLines.length - 2; i >= 0; i--) {
+      const prevLine = prefixLines[i];
+      if (prevLine.trim() !== '') {
+        // Found last non-empty line
+        if (prevLine.trim().endsWith(':')) {
+          const firstLine = lines[0];
+          // Add indent if not already indented
+          if (firstLine && firstLine[0] !== ' ' && firstLine[0] !== '\t') {
+            const indentedFirstLine = '    ' + firstLine;
+            const restLines = lines.slice(1).join('\n');
+            return restLines ? `${indentedFirstLine}\n${restLines}` : indentedFirstLine;
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  // Default: keep completion as-is
   return completion;
 }
 

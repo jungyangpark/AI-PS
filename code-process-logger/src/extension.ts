@@ -640,16 +640,23 @@ async function setAssignmentId(context: vscode.ExtensionContext): Promise<void> 
 
   // Update completion provider's assignment ID and session ID
   if (completionProvider) {
+    // First disable to reset state
+    completionProvider.setEnabled(false);
+
     completionProvider.setAssignmentId(trimmedId);
     completionProvider.setSessionId(newSessionId);
 
     // Enable autocomplete if assignment is set (not "-")
     if (trimmedId !== '-') {
-      completionProvider.setEnabled(true);
-      updateStatusBar(true, true, 'autocomplete');
-      vscode.window.showInformationMessage(`Assignment ID set to: ${trimmedId}. Autocomplete enabled.`);
+      // Use setTimeout to ensure EditTracker detects the state change (false → true)
+      setTimeout(() => {
+        if (completionProvider) {
+          completionProvider.setEnabled(true);
+          updateStatusBar(true, true, 'autocomplete');
+        }
+      }, 100);
+      vscode.window.showInformationMessage(`Assignment ID set to: ${trimmedId}. Autocomplete will be enabled.`);
     } else {
-      completionProvider.setEnabled(false);
       vscode.window.showInformationMessage(`Assignment ID reset. Autocomplete disabled.`);
     }
   }
