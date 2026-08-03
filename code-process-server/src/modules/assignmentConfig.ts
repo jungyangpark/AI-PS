@@ -23,18 +23,15 @@ const ASSIGNMENTS_DIR = path.join(__dirname, '../../assignments');
  */
 export function loadAssignmentConfig(assignmentId: string): AssignmentConfig | null {
   try {
-    // Try to find assignment file
-    const files = fs.readdirSync(ASSIGNMENTS_DIR);
-    const assignmentFile = files.find(file =>
-      file.endsWith('.json') && file.includes(assignmentId)
-    );
+    // Exact match for assignment file
+    const fileName = `${assignmentId}.json`;
+    const filePath = path.join(ASSIGNMENTS_DIR, fileName);
 
-    if (!assignmentFile) {
-      console.error(`Assignment ${assignmentId} not found`);
+    if (!fs.existsSync(filePath)) {
+      console.error(`Assignment ${assignmentId} not found at ${filePath}`);
       return null;
     }
 
-    const filePath = path.join(ASSIGNMENTS_DIR, assignmentFile);
     const content = fs.readFileSync(filePath, 'utf-8');
     const config = JSON.parse(content) as AssignmentConfig;
 
