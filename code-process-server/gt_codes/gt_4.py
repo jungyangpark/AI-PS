@@ -1,12 +1,12 @@
-def find(idx, mn, mx):
-    if idx == len(nums):
-        return f"{mn} {mx}"
+def find_min_max(nums, idx=0):
+    if idx == len(nums) - 1:
+        return nums[idx], nums[idx]
 
-    mn = min(mn, nums[idx])
-    mx = max(mx, nums[idx])
-
-    return find(idx + 1, mn, mx)
+    rest_min, rest_max = find_min_max(nums, idx + 1)
+    cur = nums[idx]
+    return min(cur, rest_min), max(cur, rest_max)
 
 s = input()
 nums = list(map(int, s.split()))
-print(find(1, nums[0], nums[0]))
+min_num, max_num = find_min_max(1)
+print(f"{min_num} {max_num}")
