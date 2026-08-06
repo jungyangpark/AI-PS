@@ -268,6 +268,9 @@ function wrapCodeWithTimer(code: string): string {
 import sys
 import tracemalloc
 
+# Increase recursion limit for large inputs
+sys.setrecursionlimit(1000000)
+
 # Start memory tracking
 tracemalloc.start()
 __start_time__ = time.perf_counter()
