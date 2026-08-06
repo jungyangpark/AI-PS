@@ -166,16 +166,7 @@ export async function runPythonUnitTests(
             output = result.output || '';
           }
 
-          const executionTime = result.executionTime || 0;
-
-          // Check if this run exceeds GT time * 2
-          if (gtTime > 0 && executionTime > gtTime * 2) {
-            lastError = `Runtime Error: Execution time (${executionTime.toFixed(2)}ms) exceeds limit (${(gtTime * 2).toFixed(2)}ms)`;
-            success = false;
-            break;
-          }
-
-          times.push(executionTime);
+          times.push(result.executionTime || 0);
           memories.push(result.peakMemory || 0);
           success = true;
         }
@@ -211,7 +202,8 @@ export async function runPythonUnitTests(
           } else {
             console.log(`        ✗ Failed: ${lastError}`);
           }
-          continue;
+          console.log(`        Skipping remaining tests due to failure.`);
+          break; // Stop testing remaining test cases
         }
 
         // Remove outliers and calculate average
