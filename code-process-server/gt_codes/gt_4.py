@@ -8,5 +8,5 @@ def find_min_max(nums, idx=0):
 
 s = input()
 nums = list(map(int, s.split()))
-min_num, max_num = find_min_max(1)
+min_num, max_num = find_min_max(nums)
 print(f"{min_num} {max_num}")
