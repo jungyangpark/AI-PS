@@ -1,14 +1,15 @@
 MOD = 1000000007
+memo = {}
 
 def uniquePaths(m, n):
-    dp = [[1] * n for _ in range(m)]
+    if m == 1 or n == 1:
+        return 1
+    
+    if (m, n) in memo:
+        return memo[(m, n)]
 
-    for i in range(1, m):
-        for j in range(1, n):
-
-            dp[i][j] = (dp[i - 1][j] + dp[i][j - 1]) % MOD
-
-    return dp[m - 1][n - 1]
+    memo[(m, n)] = (uniquePaths(m - 1, n) + uniquePaths(m, n - 1)) % MOD
+    return memo[(m, n)]
 
 m, n = input().split()
 print(uniquePaths(int(m), int(n)))

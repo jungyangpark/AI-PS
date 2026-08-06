@@ -3,12 +3,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
+/**
+ * Remove outliers from array (removes top and bottom N values)
+ */
+function removeOutliers(values: number[], removeCount: number): number[] {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted.slice(removeCount, sorted.length - removeCount);
+}
+
 export interface UnitTestCase {
   name: string;
   input: any; // Can be string (for stdin) or array (for function args)
   expectedOutput: any;
   timeout?: number; // milliseconds
-  gtExecutionTime?: number; // GT code execution time in milliseconds
+  gtExecutionTime?: number; // GT code execution time in milliseconds (averaged)
+  gtMemoryUsage?: number; // GT code peak memory usage in bytes (averaged)
 }
 
 export interface UnitTestResult {
@@ -120,38 +129,83 @@ export async function runPythonUnitTests(
     const wrappedCode = wrapCodeWithTimer(code);
     fs.writeFileSync(tempFile, wrappedCode, 'utf-8');
 
+    const STUDENT_RUNS = 30;
+    const STUDENT_OUTLIERS = 5;
+
     // Run each test case separately
     for (let idx = 0; idx < testCases.length; idx++) {
       const test = testCases[idx];
-      console.log(`      → Test ${idx + 1}/${testCases.length}: ${test.name}`);
+      console.log(`      → Test ${idx + 1}/${testCases.length}: ${test.name} (${STUDENT_RUNS} runs)`);
 
-      // Dynamic time limit: GT execution time * 1.5, with min 1000ms and max 30000ms
+      // Dynamic time limit: GT execution time * 2
       const gtTime = test.gtExecutionTime || 0;
       const dynamicTimeout = gtTime > 0
-        ? Math.max(1000, Math.min(30000, gtTime * 1.5))
+        ? gtTime * 2
         : 5000; // fallback to 5 seconds if GT time not available
 
       const testTimeout = test.timeout || dynamicTimeout;
       console.log(`        Time limit: ${testTimeout.toFixed(0)}ms (GT: ${gtTime.toFixed(2)}ms)`);
 
+      // Run 30 times to get stable measurements
+      const times: number[] = [];
+      const memories: number[] = [];
+      let output = '';
+      let lastError = '';
+      let success = false;
 
       try {
-        const result = await runSingleStdinTest(tempFile, test, testTimeout);
-        const executionTime = result.executionTime || 0;
-        const peakMemory = result.peakMemory || 0;
-        results.executionTimes.push(executionTime);
-        results.gtExecutionTimes.push(test.gtExecutionTime || 0);
-        results.memoryUsages.push(peakMemory);
-        results.gtMemoryUsages.push(0); // Will be populated later if needed
+        for (let run = 0; run < STUDENT_RUNS; run++) {
+          const result = await runSingleStdinTest(tempFile, test, testTimeout);
 
-        if (result.success && result.output !== undefined) {
+          if (!result.success) {
+            // If any run fails, stop and report failure
+            lastError = result.error || 'Unknown error';
+            success = false;
+            break;
+          }
+
+          if (run === 0) {
+            output = result.output || '';
+          }
+
+          times.push(result.executionTime || 0);
+          memories.push(result.peakMemory || 0);
+          success = true;
+        }
+
+        if (!success) {
+          // Test failed
+          results.passed = false;
+          results.errors.push(`${test.name}: ${lastError}`);
+          results.failedTests.push(test);
+          results.executionTimes.push(0);
+          results.gtExecutionTimes.push(test.gtExecutionTime || 0);
+          results.memoryUsages.push(0);
+          results.gtMemoryUsages.push(test.gtMemoryUsage || 0);
+          console.log(`        ✗ Failed: ${lastError}`);
+          continue;
+        }
+
+        // Remove outliers and calculate average
+        const filteredTimes = removeOutliers(times, STUDENT_OUTLIERS);
+        const filteredMemories = removeOutliers(memories, STUDENT_OUTLIERS);
+
+        const avgTime = filteredTimes.reduce((sum, t) => sum + t, 0) / filteredTimes.length;
+        const avgMemory = filteredMemories.reduce((sum, m) => sum + m, 0) / filteredMemories.length;
+
+        results.executionTimes.push(avgTime);
+        results.gtExecutionTimes.push(test.gtExecutionTime || 0);
+        results.memoryUsages.push(avgMemory);
+        results.gtMemoryUsages.push(test.gtMemoryUsage || 0);
+
+        if (output !== undefined) {
           // Compare output (trim whitespace for comparison)
-          const actualOutput = result.output.trim();
+          const actualOutput = output.trim();
           const expectedOutput = String(test.expectedOutput).trim();
 
           if (actualOutput === expectedOutput) {
             results.passedTests++;
-            console.log(`        ✓ Passed (${executionTime}ms)`);
+            console.log(`        ✓ Passed (avg ${avgTime.toFixed(2)}ms, avg ${(avgMemory / 1024).toFixed(2)}KB)`);
           } else {
             results.passed = false;
             results.failedTests.push({
@@ -164,10 +218,13 @@ export async function runPythonUnitTests(
           }
         } else {
           results.passed = false;
-          results.errors.push(`${test.name}: ${result.error}`);
+          results.errors.push(`${test.name}: ${lastError}`);
           results.failedTests.push(test);
+          results.executionTimes.push(0);
           results.gtExecutionTimes.push(test.gtExecutionTime || 0);
-          console.log(`        ✗ Error: ${result.error}`);
+          results.memoryUsages.push(0);
+          results.gtMemoryUsages.push(test.gtMemoryUsage || 0);
+          console.log(`        ✗ Error: ${lastError}`);
         }
       } catch (error: any) {
         results.passed = false;

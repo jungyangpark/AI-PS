@@ -622,57 +622,73 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     }
   }
 
-  registerTabHandler(): void {
-    // Register keyboard handler for ghost text management (typing behavior)
-    const typeDisposable = vscode.commands.registerCommand('type', async (args) => {
-      const editor = vscode.window.activeTextEditor;
+  async registerTabHandler(): Promise<void> {
+    // Check if 'type' command is already registered
+    const allCommands = await vscode.commands.getCommands(true);
+    const typeCommandExists = allCommands.includes('type');
 
-      this.logToFile('type', {
-        text: args.text,
-        enabled: this.enabled,
-        hasCompletion: !!this.cachedCompletion,
-        currentLineCompleted: this.currentLineCompleted,
-        waitingForEnterAfterLevel2: this.waitingForEnterAfterLevel2,
-        level: this.level
-      });
+    if (typeCommandExists) {
+      console.warn('⚠️ [AI-PS] type command already registered by another extension');
+      console.warn('⚠️ [AI-PS] Level 1/3 character-by-character matching will not work');
+      console.warn('⚠️ [AI-PS] Please uninstall conflicting extensions (Vim, etc.) or reload window after AI-PS session starts');
+      // Don't register - avoid conflict
+    } else {
+      // Register keyboard handler for ghost text management (typing behavior)
+      try {
+        const typeDisposable = vscode.commands.registerCommand('type', async (args) => {
+          const editor = vscode.window.activeTextEditor;
 
-      // Special case: Level 2 Enter detection
-      const char = args.text;
-      if (this.waitingForEnterAfterLevel2 && (char === '\n' || char === '\r')) {
-        console.log(`✅ [CLIENT] Enter after Level 2 - requesting next line`);
-        this.waitingForEnterAfterLevel2 = false;
+          this.logToFile('type', {
+            text: args.text,
+            enabled: this.enabled,
+            hasCompletion: !!this.cachedCompletion,
+            currentLineCompleted: this.currentLineCompleted,
+            waitingForEnterAfterLevel2: this.waitingForEnterAfterLevel2,
+            level: this.level
+          });
 
-        // Type the Enter key
-        await vscode.commands.executeCommand('default:type', args);
+          // Special case: Level 2 Enter detection
+          const char = args.text;
+          if (this.waitingForEnterAfterLevel2 && (char === '\n' || char === '\r')) {
+            console.log(`✅ [CLIENT] Enter after Level 2 - requesting next line`);
+            this.waitingForEnterAfterLevel2 = false;
 
-        // Request next line from cache
-        await this.requestNextLine();
-        return;
+            // Type the Enter key
+            await vscode.commands.executeCommand('default:type', args);
+
+            // Request next line from cache
+            await this.requestNextLine();
+            return;
+          }
+
+          // Handle typing if: enabled AND (has completion OR waiting for Enter after Tab accept)
+          if (!this.enabled || (!this.cachedCompletion && !this.currentLineCompleted) || !editor) {
+            // No ghost text showing and not waiting for Enter, normal behavior
+            return vscode.commands.executeCommand('default:type', args);
+          }
+
+          // Ghost text is showing (char already defined above)
+
+          if (this.level === 1) {
+            // Level 1: Match character by character
+            return this.handleLevel1Type(editor, char);
+          } else if (this.level === 2) {
+            // Level 2: No autocomplete - normal typing
+            return vscode.commands.executeCommand('default:type', args);
+          } else if (this.level === 3) {
+            // Level 3: Match character by character (same as Level 1), but Tab accepts
+            return this.handleLevel3Type(editor, char);
+          }
+
+          // Default: normal behavior
+          return vscode.commands.executeCommand('default:type', args);
+        });
+        this.disposables.push(typeDisposable);
+        console.log('✅ [AI-PS] type command registered successfully');
+      } catch (error) {
+        console.error('❌ [AI-PS] Failed to register type command:', error);
       }
-
-      // Handle typing if: enabled AND (has completion OR waiting for Enter after Tab accept)
-      if (!this.enabled || (!this.cachedCompletion && !this.currentLineCompleted) || !editor) {
-        // No ghost text showing and not waiting for Enter, normal behavior
-        return vscode.commands.executeCommand('default:type', args);
-      }
-
-      // Ghost text is showing (char already defined above)
-
-      if (this.level === 1) {
-        // Level 1: Match character by character
-        return this.handleLevel1Type(editor, char);
-      } else if (this.level === 2) {
-        // Level 2: No autocomplete - normal typing
-        return vscode.commands.executeCommand('default:type', args);
-      } else if (this.level === 3) {
-        // Level 3: Match character by character (same as Level 1), but Tab accepts
-        return this.handleLevel3Type(editor, char);
-      }
-
-      // Default: normal behavior
-      return vscode.commands.executeCommand('default:type', args);
-    });
-    this.disposables.push(typeDisposable);
+    }
 
     // Listen for text deletion (backspace/delete) via document change events
     const changeDisposable = vscode.workspace.onDidChangeTextDocument(e => {

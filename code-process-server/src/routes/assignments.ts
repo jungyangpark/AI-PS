@@ -65,12 +65,13 @@ async function registerSingleAssignment(assignmentData: RegisterAssignmentReques
 
   console.log(`✅ Generated ${result.outputs!.length} outputs`);
 
-  // Create test cases with generated outputs and GT execution times
+  // Create test cases with generated outputs, GT execution times, and GT memory usage
   const testCases = testInputs.map((input, idx) => ({
     name: `test ${idx + 1}`,
     input: input,
     expectedOutput: result.outputs![idx],
-    gtExecutionTime: result.executionTimes![idx]
+    gtExecutionTime: result.executionTimes![idx],
+    gtMemoryUsage: result.memoryUsages![idx]
   }));
 
   // Create assignment config

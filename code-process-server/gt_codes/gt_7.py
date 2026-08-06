@@ -1,11 +1,15 @@
-MOD = 1000000007
-
+memo = {}
 def padovan(n):
-	dp = [1] * (n + 1)
-	dp[0] = 0
-	for idx in range(3, n + 1):
-		dp[idx] = (dp[idx-3] + dp[idx-2]) % MOD
-	return dp[n]
-
-n = int(input())
-print(padovan(n))
+    if n in memo:
+        return memo[n]
+    elif n <= 3 :
+        f = 1
+        memo[n] = f
+        return f
+    else: 
+        
+        f = (padovan(n-2) + padovan(n-3)) % 1000000007
+        memo[n] = f
+        return f
+num = int(input())     
+print(padovan(num))

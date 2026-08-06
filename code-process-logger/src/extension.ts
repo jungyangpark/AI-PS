@@ -179,7 +179,7 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
   completionProvider.setSessionId(sessionId);
   completionProvider.setLevel(studentLevel);
   completionProvider.setEnabled(false);
-  completionProvider.registerTabHandler();
+  await completionProvider.registerTabHandler();
   completionProvider.startListening();
 
   // Register as InlineCompletionItemProvider
