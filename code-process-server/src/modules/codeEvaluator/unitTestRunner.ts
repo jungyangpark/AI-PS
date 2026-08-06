@@ -137,14 +137,12 @@ export async function runPythonUnitTests(
       const test = testCases[idx];
       console.log(`      → Test ${idx + 1}/${testCases.length}: ${test.name} (${STUDENT_RUNS} runs)`);
 
-      // Dynamic time limit: GT execution time * 2
+      // Safety timeout to prevent infinite loops
       const gtTime = test.gtExecutionTime || 0;
-      const dynamicTimeout = gtTime > 0
-        ? gtTime * 2
-        : 5000; // fallback to 5 seconds if GT time not available
+      const safetyTimeout = 30000; // 30 seconds safety limit
 
-      const testTimeout = test.timeout || dynamicTimeout;
-      console.log(`        Time limit: ${testTimeout.toFixed(0)}ms (GT: ${gtTime.toFixed(2)}ms)`);
+      const testTimeout = test.timeout || safetyTimeout;
+      console.log(`        Time limit: ${(gtTime * 2).toFixed(2)}ms (GT: ${gtTime.toFixed(2)}ms)`);
 
       // Run 30 times to get stable measurements
       const times: number[] = [];
@@ -168,21 +166,51 @@ export async function runPythonUnitTests(
             output = result.output || '';
           }
 
-          times.push(result.executionTime || 0);
+          const executionTime = result.executionTime || 0;
+
+          // Check if this run exceeds GT time * 2
+          if (gtTime > 0 && executionTime > gtTime * 2) {
+            lastError = `Runtime Error: Execution time (${executionTime.toFixed(2)}ms) exceeds limit (${(gtTime * 2).toFixed(2)}ms)`;
+            success = false;
+            break;
+          }
+
+          times.push(executionTime);
           memories.push(result.peakMemory || 0);
           success = true;
         }
 
         if (!success) {
-          // Test failed
+          // Test failed - but calculate average time/memory from successful runs (if any)
+          let avgTime = 0;
+          let avgMemory = 0;
+
+          if (times.length > 0) {
+            // If we have some successful runs, calculate average
+            const filteredTimes = times.length > STUDENT_OUTLIERS * 2
+              ? removeOutliers(times, STUDENT_OUTLIERS)
+              : times;
+            const filteredMemories = memories.length > STUDENT_OUTLIERS * 2
+              ? removeOutliers(memories, STUDENT_OUTLIERS)
+              : memories;
+
+            avgTime = filteredTimes.reduce((sum, t) => sum + t, 0) / filteredTimes.length;
+            avgMemory = filteredMemories.reduce((sum, m) => sum + m, 0) / filteredMemories.length;
+          }
+
           results.passed = false;
           results.errors.push(`${test.name}: ${lastError}`);
           results.failedTests.push(test);
-          results.executionTimes.push(0);
+          results.executionTimes.push(avgTime);
           results.gtExecutionTimes.push(test.gtExecutionTime || 0);
-          results.memoryUsages.push(0);
+          results.memoryUsages.push(avgMemory);
           results.gtMemoryUsages.push(test.gtMemoryUsage || 0);
-          console.log(`        ✗ Failed: ${lastError}`);
+
+          if (avgTime > 0) {
+            console.log(`        ✗ Failed: ${lastError} (avg ${avgTime.toFixed(2)}ms from ${times.length} runs)`);
+          } else {
+            console.log(`        ✗ Failed: ${lastError}`);
+          }
           continue;
         }
 
@@ -197,6 +225,16 @@ export async function runPythonUnitTests(
         results.gtExecutionTimes.push(test.gtExecutionTime || 0);
         results.memoryUsages.push(avgMemory);
         results.gtMemoryUsages.push(test.gtMemoryUsage || 0);
+
+        // Check if average time exceeds GT time * 2 - if so, fail immediately and skip remaining tests
+        if (gtTime > 0 && avgTime > gtTime * 2) {
+          results.passed = false;
+          results.errors.push(`${test.name}: Average execution time (${avgTime.toFixed(2)}ms) exceeds limit (${(gtTime * 2).toFixed(2)}ms)`);
+          results.failedTests.push(test);
+          console.log(`        ✗ Failed: Avg time ${avgTime.toFixed(2)}ms > limit ${(gtTime * 2).toFixed(2)}ms`);
+          console.log(`        Skipping remaining tests due to time limit failure.`);
+          break; // Stop testing remaining test cases
+        }
 
         if (output !== undefined) {
           // Compare output (trim whitespace for comparison)
@@ -215,6 +253,7 @@ export async function runPythonUnitTests(
               actualOutput: actualOutput
             } as any);
             console.log(`        ✗ Failed (output mismatch)`);
+            break; // Stop testing remaining test cases on output mismatch too
           }
         } else {
           results.passed = false;
