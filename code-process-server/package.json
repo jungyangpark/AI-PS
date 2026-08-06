@@ -4,8 +4,8 @@
   "description": "Backend server for Code Process Logger — LLM autocomplete proxy + log collection",
   "main": "dist/index.js",
   "scripts": {
-    "build": "pip3 install --break-system-packages -r requirements.txt && tsc && mkdir -p dist/modules/studentEvaluation && cp src/modules/studentEvaluation/*.py dist/modules/studentEvaluation/",
-    "start": "node dist/index.js",
+    "build": "tsc && mkdir -p dist/modules/studentEvaluation && cp src/modules/studentEvaluation/*.py dist/modules/studentEvaluation/",
+    "start": "pip3 install --break-system-packages -r requirements.txt && node dist/index.js",
     "dev": "ts-node src/index.ts"
   },
   "dependencies": {
