@@ -18,6 +18,9 @@ import json
 import sys
 import os
 
+# Add Render's user site-packages to path (for pandas)
+sys.path.insert(0, '/opt/render/.local/lib/python3.11/site-packages')
+
 # 같은 디렉토리의 모듈 import
 import bkt
 import struggling_score
