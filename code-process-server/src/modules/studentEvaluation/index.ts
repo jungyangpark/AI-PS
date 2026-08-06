@@ -100,7 +100,11 @@ function runPythonEvaluation(input: PythonEvaluationInput): PythonEvaluationResu
       input: inputJson,
       encoding: 'utf-8',
       cwd: path.dirname(PYTHON_SCRIPT),
-      maxBuffer: 10 * 1024 * 1024 // 10MB buffer
+      maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+      env: {
+        ...process.env,
+        PYTHONPATH: '/opt/render/.local/lib/python3.11/site-packages'
+      }
     });
 
     return JSON.parse(result) as PythonEvaluationResult;
