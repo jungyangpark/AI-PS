@@ -194,7 +194,9 @@ completeRouter.post('/', async (req: Request, res: Response) => {
       const lastLineFromPrefix = prefixLines[prefixLines.length - 1]?.trim() || '';
 
       // Compare student's code with cached recommendation
-      const validationResult = lastLineFromPrefix === expectedCode ? 'FOLLOW' : 'REJECT';
+      // Student may have typed extra code before accepting (e.g., "return " before accepting the rest)
+      // So check if student's code ends with expected code
+      const validationResult = lastLineFromPrefix.endsWith(expectedCode) ? 'FOLLOW' : 'REJECT';
 
       if (validationResult === 'REJECT') {
         console.log(`🔄 [REJECT] Validation failed`);
