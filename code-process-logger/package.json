@@ -45,7 +45,7 @@
       {
         "command": "codeProcessLogger.handleTab",
         "key": "tab",
-        "when": "editorTextFocus && codeProcessLogger.hasCompletion"
+        "when": "editorTextFocus && codeProcessLogger.hasCompletion && inlineSuggestionVisible"
       },
       {
         "command": "codeProcessLogger.toggleAutocomplete",
