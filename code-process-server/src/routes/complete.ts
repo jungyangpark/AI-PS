@@ -296,38 +296,59 @@ completeRouter.post('/', async (req: Request, res: Response) => {
 
     let fullCompletion = extractCompletion(response);
     fullCompletion = fixFirstLine(prefix, fullCompletion);
-    console.log(`🤖 LLM completion: "${fullCompletion.substring(0, 50)}..."`);
+
+    // Log full completion
+    console.log(`🤖 LLM completion (${fullCompletion.split('\n').length} lines):`);
+    fullCompletion.split('\n').forEach((line, idx) => {
+      console.log(`   ${idx + 1}: ${line}`);
+    });
 
     const fullCode = prefix + fullCompletion;
     const prefixLineCount = prefix.split('\n').length;
+
+    // Split completion into lines first (all lines, not filtered)
+    const completionLinesRaw = fullCompletion.split('\n').filter(line => line.trim() !== '');
 
     // Analyze fullCode with LLM to get context-aware KC detection
     const { analyzeCodeLineByLine } = await import('../modules/code2block/llmKcMapper');
     const lineMappings = await analyzeCodeLineByLine(fullCode);
 
-    // Filter lines that belong to the completion
-    const completionLines = lineMappings.filter(mapping => mapping.line >= prefixLineCount);
+    // Log KC analysis results
+    console.log(`🔍 KC Analysis results (${lineMappings.length} lines):`);
+    lineMappings.forEach(mapping => {
+      console.log(`   Line ${mapping.line}: "${mapping.code}" → KCs: [${mapping.kcs.join(', ')}]`);
+    });
 
-    // Convert line mappings to CodeBlocks
-    const lineBlocks: CodeBlock[] = completionLines.map((mapping, idx) => {
-      const { KC_NAME_TO_ID } = require('../modules/studentEvaluation/kcMapping');
-      const kcs = mapping.kcs.map(kcName => ({
-        id: KC_NAME_TO_ID[kcName] || 'KC_000',
-        name: kcName,
-        category: 'basic' as const
-      }));
+    // Filter lines that belong to the completion
+    const completionKCMappings = lineMappings.filter(mapping => mapping.line >= prefixLineCount);
+
+    // Create a map: line number -> KC list
+    const lineKCMap = new Map<number, string[]>();
+    completionKCMappings.forEach(mapping => {
+      lineKCMap.set(mapping.line, mapping.kcs);
+    });
+
+    // Convert all completion lines to CodeBlocks (with or without KCs)
+    const { KC_NAME_TO_ID } = require('../modules/studentEvaluation/kcMapping');
+    const lineBlocks: CodeBlock[] = completionLinesRaw.map((line, idx) => {
+      const lineNumber = prefixLineCount + idx;
+      const kcs = lineKCMap.get(lineNumber) || []; // Empty array if no KC found
 
       return {
         id: `L${idx}`,
-        code: mapping.code,
+        code: line,
         type: 'Line' as any,
-        startLine: mapping.line,
-        endLine: mapping.line,
-        kcs
+        startLine: lineNumber,
+        endLine: lineNumber,
+        kcs: kcs.map(kcName => ({
+          id: KC_NAME_TO_ID[kcName] || 'KC_000',
+          name: kcName,
+          category: 'basic' as const
+        }))
       };
     });
 
-    console.log(`📊 Analyzed: ${lineBlocks.length} lines with KCs`);
+    console.log(`📊 Final blocks: ${lineBlocks.length} lines (${completionKCMappings.length} with KCs, ${lineBlocks.length - completionKCMappings.length} without KCs)`);
 
     // If no lines in completion, return error
     if (lineBlocks.length === 0) {
