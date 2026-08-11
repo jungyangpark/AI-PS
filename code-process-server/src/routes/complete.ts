@@ -255,6 +255,14 @@ completeRouter.post('/', async (req: Request, res: Response) => {
     if (sessionId && blockCache.has(sessionId) && !requestNextBlock) {
       // Return current line (not moving index)
       const cache = blockCache.get(sessionId)!;
+
+      // Check if currentIndex is out of bounds
+      if (cache.currentIndex >= cache.blocks.length) {
+        console.log(`📭 [CACHE] All blocks completed (${cache.currentIndex}/${cache.blocks.length})`);
+        res.json({ completion: '', allBlocksCompleted: true });
+        return;
+      }
+
       const currentLine = cache.blocks[cache.currentIndex];
       const blockLevel = determineBlockLevel(subjectId, currentLine);
 
