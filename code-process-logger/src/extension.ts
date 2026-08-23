@@ -727,8 +727,13 @@ async function disableExternalAutocomplete(): Promise<void> {
   await editorConfig.update('formatOnPaste', false, vscode.ConfigurationTarget.Workspace);
 
   // Disable Python-specific auto-indent
-  const pythonConfig = vscode.workspace.getConfiguration('python');
-  await pythonConfig.update('analysis.autoIndent', false, vscode.ConfigurationTarget.Workspace);
+  try {
+    const pythonConfig = vscode.workspace.getConfiguration('python');
+    await pythonConfig.update('analysis.autoIndent', false, vscode.ConfigurationTarget.Workspace);
+  } catch (error) {
+    // Ignore if Python extension is not installed or setting doesn't exist
+    console.log('Python auto-indent setting not available (Python extension may not be installed)');
+  }
 
   // Disable Cursor AI completions
   try {

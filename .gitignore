@@ -36,4 +36,12 @@ not_for_Git
 
 .claude/
 CLAUDE.md
+AGENTS.md
+CODEBUDDY.md
+GEMINI.md
+QODER.md
+README.md
+opencode.jsonc
 .vscode/
+# Added by code-review-graph
+.*

@@ -142,11 +142,53 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     const language = document.languageId;
     const fileName = document.fileName.split('/').pop() || 'untitled';
 
+    // Save request-time state for validation after response
+    const requestTimePrefix = prefix;
+    const requestTimePosition = position;
+
     const cancellation = new vscode.CancellationTokenSource();
 
     try {
       const completion = await this.fetchCompletion(prefix, suffix, language, fileName, cancellation.token, questionMode);
       if (completion && completion.trim().length > 0) {
+        // Validate that document state hasn't changed significantly during request
+        const currentEditor = vscode.window.activeTextEditor;
+        if (!currentEditor || currentEditor.document !== document) {
+          console.log(`🔵 [VALIDATION] Editor changed during request, ignoring completion`);
+          this.logToFile('triggerCompletion', { validationFailed: 'editorChanged' });
+          return;
+        }
+
+        const currentPosition = currentEditor.selection.active;
+        const currentPrefix = document.getText(new vscode.Range(new vscode.Position(0, 0), currentPosition));
+
+        // Check if prefix changed (user typed more code)
+        const prefixDiff = currentPrefix.length - requestTimePrefix.length;
+
+        // Allow small changes (auto-indent, etc.) during requestNextBlock
+        if (currentPrefix !== requestTimePrefix && !(isRequestNextBlock && prefixDiff <= 4)) {
+          console.log(`🔵 [VALIDATION] Code changed during request, ignoring completion`);
+          console.log(`   Request-time prefix length: ${requestTimePrefix.length}`);
+          console.log(`   Current prefix length: ${currentPrefix.length}`);
+          console.log(`   Prefix diff: ${prefixDiff}, requestNextBlock: ${isRequestNextBlock}`);
+          console.log(`🔵 [VALIDATION] Retrying with current state`);
+
+          // Clear server cache since this response is outdated
+          this.shouldClearCache = true;
+
+          this.logToFile('triggerCompletion', {
+            validationFailed: 'prefixChanged',
+            requestPrefixLength: requestTimePrefix.length,
+            currentPrefixLength: currentPrefix.length,
+            prefixDiff,
+            clearCacheSet: true,
+            retrying: true
+          });
+
+          // Retry immediately with current state (don't wait for mid-pause)
+          await this.triggerCompletion(false);
+          return;
+        }
         // Remove leading newline if present
         let cleanedCompletion = completion.startsWith('\n') ? completion.substring(1) : completion;
 
@@ -197,7 +239,17 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
 
         this.logToFile('triggerCompletion', { ghostShown: true });
       } else {
-        this.logToFile('triggerCompletion', { completionEmpty: true });
+        // Empty completion - disable autocomplete and clear cache for next request
+        console.log('🔵 [CLIENT] Empty completion received - disabling autocomplete');
+        this.setEnabled(false);
+        this.shouldClearCache = true;
+
+        // Notify EditTracker to reset state (will re-enable after idle)
+        if (this.onDisableCallback) {
+          this.onDisableCallback();
+        }
+
+        this.logToFile('triggerCompletion', { completionEmpty: true, disabled: true, clearCacheSet: true });
       }
     } catch (error) {
       this.logToFile('triggerCompletion', { error: String(error) });
@@ -690,14 +742,39 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       }
     }
 
-    // Listen for text deletion (backspace/delete) via document change events
-    const changeDisposable = vscode.workspace.onDidChangeTextDocument(e => {
-      if (!this.enabled || !this.cachedCompletion) {
+    // Listen for text changes via document change events
+    const changeDisposable = vscode.workspace.onDidChangeTextDocument(async e => {
+      const editor = vscode.window.activeTextEditor;
+
+      // Debug log for all changes (Level 1 only)
+      if (this.level === 1 && editor && e.document === editor.document) {
+        console.log(`[LV1] 📝 Document changed. enabled=${this.enabled}, hasCache=${!!this.cachedCompletion}, lineCompleted=${this.currentLineCompleted}, changes=${e.contentChanges.length}`);
+        e.contentChanges.forEach((c, i) => {
+          console.log(`[LV1]   Change ${i}: "${c.text.replace(/\n/g, '\\n')}" (len=${c.rangeLength})`);
+        });
+      }
+
+      if (!editor || e.document !== editor.document) {
         return;
       }
 
-      const editor = vscode.window.activeTextEditor;
-      if (!editor || e.document !== editor.document) {
+      // Level 1 only: Check for Enter key after line completion (BEFORE early return)
+      if (this.level === 1 && this.currentLineCompleted) {
+        console.log(`[LV1] 🔍 Line completed state, checking for Enter. Changes: ${e.contentChanges.length}`);
+        for (const change of e.contentChanges) {
+          console.log(`[LV1] 🔍 Change: text="${change.text.replace(/\n/g, '\\n').replace(/\r/g, '\\r')}", rangeLength=${change.rangeLength}`);
+          // Check if Enter was pressed (newline inserted)
+          if (change.text.includes('\n') || change.text.includes('\r')) {
+            console.log(`[LV1] ✅ Enter after line completion - requesting next line`);
+            this.currentLineCompleted = false;
+            this.logToFile('level1Validation', { enterPressed: true, requestingNextLine: true });
+            await this.requestNextLine();
+            return;
+          }
+        }
+      }
+
+      if (!this.enabled || !this.cachedCompletion) {
         return;
       }
 
@@ -711,7 +788,65 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
             this.onDisableCallback();
           }
           this.logToFile('textDeleted', { disabledAutocomplete: true, cacheCleared: true });
-          break;
+          return;
+        }
+      }
+
+      // Level 1 only: Validate typed content matches cached completion
+      if (this.level === 1) {
+
+        // Validate typed content if we have a cached position
+        if (this.cachedPosition) {
+          // Get current content from cached position to cursor
+          const currentPosition = editor.selection.active;
+          const typedRange = new vscode.Range(this.cachedPosition, currentPosition);
+          let typedText = editor.document.getText(typedRange);
+
+          // Remove leading and trailing newlines (Enter key is handled separately)
+          typedText = typedText.replace(/^[\n\r]+/, '').replace(/[\n\r]+$/, '');
+
+          // Compare typed text with cached completion (include leading whitespace)
+          const expectedCompletion = this.cachedCompletion;
+
+          // Check if typed text matches expected completion (from the beginning)
+          if (expectedCompletion.startsWith(typedText)) {
+            // Match! Update matchedChars
+            this.matchedChars = typedText.length;
+            console.log(`[LV1] ✅ Match: typed="${typedText}", matched=${this.matchedChars}/${expectedCompletion.length}`);
+
+            // If fully matched, clear ghost and mark line as completed
+            if (this.matchedChars >= expectedCompletion.length) {
+              await this.clearGhost();
+              this.currentLineCompleted = true;
+
+              // Log Follow event
+              if (this.onLogEventCallback) {
+                this.onLogEventCallback('AutocompleteFollow');
+              }
+
+              console.log(`[LV1] ✅ Line completed, waiting for Enter`);
+              this.logToFile('level1Validation', { status: 'completed', waitingForEnter: true });
+            } else {
+              // Still matching - re-trigger ghost
+              await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+              this.logToFile('level1Validation', { status: 'matching', remaining: expectedCompletion.length - this.matchedChars });
+            }
+          } else if (typedText.length > 0) {
+            // Mismatch! Clear ghost and disable
+            console.log(`[LV1] ❌ Mismatch: expected="${expectedCompletion.substring(0, 20)}", typed="${typedText}"`);
+
+            // Log Reject event
+            if (this.onLogEventCallback) {
+              this.onLogEventCallback('AutocompleteReject');
+            }
+
+            await this.clearGhost(true);
+            this.enabled = false;
+            if (this.onDisableCallback) {
+              this.onDisableCallback();
+            }
+            this.logToFile('level1Validation', { status: 'mismatch', disabled: true });
+          }
         }
       }
     });
