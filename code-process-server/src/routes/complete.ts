@@ -54,6 +54,30 @@ function determineBlockLevel(studentId: string, block: CodeBlock): number {
 }
 
 /**
+ * Check if a line is a meta message (not actual code)
+ * Examples: "(No code needed - the program is complete)", "# The code is finished"
+ */
+function isMetaMessage(code: string): boolean {
+  const trimmed = code.trim().toLowerCase();
+
+  // Common patterns for completion messages
+  const patterns = [
+    'no code needed',
+    'program is complete',
+    'code is complete',
+    'already complete',
+    'finished',
+    'no more code',
+    'nothing more',
+    'all done',
+    'that\'s it',
+    'the end',
+  ];
+
+  return patterns.some(pattern => trimmed.includes(pattern));
+}
+
+/**
  * Split semantic blocks into line-by-line blocks
  * Each line inherits the KC information and type from its parent block
  * Removes duplicate lines based on code content (prevents "if s == 1:" appearing twice)
@@ -70,6 +94,12 @@ function splitBlocksIntoLines(blocks: CodeBlock[]): CodeBlock[] {
 
       // Skip empty lines
       if (trimmedCode === '') {
+        return;
+      }
+
+      // Skip meta messages (completion messages, not actual code)
+      if (isMetaMessage(trimmedCode)) {
+        console.log(`⏭️ Skipping meta message: "${trimmedCode}"`);
         return;
       }
 
@@ -97,17 +127,7 @@ export const completeRouter = Router();
 
 let client: Anthropic | null = null;
 
-// Block cache: sessionId -> block data
-interface BlockCacheEntry {
-  blocks: CodeBlock[];
-  currentIndex: number;
-  fullCode: string;
-  studentId: string;
-  assignmentId: string;
-  sessionId: string;
-}
-
-const blockCache = new Map<string, BlockCacheEntry>();
+// Block cache removed - client now handles caching locally
 
 function getClient(): Anthropic | null {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -165,134 +185,14 @@ completeRouter.post('/', async (req: Request, res: Response) => {
   const isQuestionMode = questionMode || false;
 
   try {
-    // Log key request info
-    const cacheStatus = sessionId ? (blockCache.has(sessionId) ? 'HIT' : 'MISS') : 'N/A';
-    console.log(`📥 Request: next=${requestNextBlock}, clear=${clearCache}, cache=${cacheStatus}`);
-
-    // Handle cache clearing (student typed different code)
-    if (clearCache && sessionId) {
-      blockCache.delete(sessionId);
-    }
+    console.log(`📥 Request: clearCache=${clearCache}`);
 
     // QUESTION MODE: Use existing non-cached flow
     if (isQuestionMode) {
       return await handleQuestionMode(req, res, anthropic, prefix, suffix, language, fileName, subjectId);
     }
 
-    // AUTOCOMPLETE MODE: Block-by-block caching
-
-    // If requesting next block and cache exists
-    if (requestNextBlock && sessionId && blockCache.has(sessionId)) {
-      const cache = blockCache.get(sessionId)!;
-
-      // ✅ Level 2 validation: Check if student's typed code matches cached recommendation
-      const currentCachedLine = cache.blocks[cache.currentIndex];
-      const expectedCode = currentCachedLine.code.trim();
-
-      // Extract last non-empty line from prefix (student's actual typed code)
-      const prefixLines = prefix.trim().split('\n').filter(line => line.trim().length > 0);
-      const lastLineFromPrefix = prefixLines[prefixLines.length - 1]?.trim() || '';
-
-      // Compare student's code with cached recommendation
-      // Student may have typed extra code before accepting (e.g., "return " before accepting the rest)
-      // So check if student's code ends with expected code
-      const validationResult = lastLineFromPrefix.endsWith(expectedCode) ? 'FOLLOW' : 'REJECT';
-
-      if (validationResult === 'REJECT') {
-        console.log(`🔄 [REJECT] Validation failed`);
-        console.log(`   Expected: "${expectedCode}"`);
-        console.log(`   Student typed: "${lastLineFromPrefix}"`);
-        console.log(`   → Clearing cache and regenerating recommendations`);
-
-        // Clear cache and regenerate from scratch
-        blockCache.delete(sessionId);
-        // Fall through to normal generation below (will create new cache)
-      } else {
-        // ✅ FOLLOW! Student typed the recommended code correctly
-
-        // Move to next block
-        cache.currentIndex++;
-
-        if (cache.currentIndex >= cache.blocks.length) {
-          // No more lines
-          res.json({ completion: '', allBlocksCompleted: true, validationResult: 'FOLLOW' });
-          return;
-        }
-
-        const nextLine = cache.blocks[cache.currentIndex];
-        const blockLevel = determineBlockLevel(subjectId, nextLine);
-
-        // Log KC info for each line
-        const kcInfo = nextLine.kcs.length > 0
-          ? nextLine.kcs.map(kc => `${kc.name}(${kc.id})`).join(', ')
-          : 'No KCs';
-        console.log(`✅ [FOLLOW] Line ${cache.currentIndex + 1}/${cache.blocks.length}: "${nextLine.code.trim()}"`);
-        console.log(`   KCs: ${kcInfo}`);
-        console.log(`   Level: ${blockLevel} (Student: ${subjectId})`);
-
-        // If Level 2, signal client to disable autocomplete
-        const shouldDisable = blockLevel === 2;
-        if (shouldDisable) {
-          console.log(`   ⚠️ Level 2 detected - client will disable autocomplete`);
-        }
-
-        res.json({
-          completion: nextLine.code,
-          subjectId,
-          timestamp: new Date().toISOString(),
-          blockIndex: cache.currentIndex,
-          totalBlocks: cache.blocks.length,
-          blockLevel,
-          disableAutocomplete: shouldDisable,
-          validationResult: 'FOLLOW',  // ✨ 추가
-        });
-        return;
-      }
-      // If mismatch, cache was deleted and we fall through to regeneration below
-    }
-
-    // Check if cache exists for this session
-    if (sessionId && blockCache.has(sessionId) && !requestNextBlock) {
-      // Return current line (not moving index)
-      const cache = blockCache.get(sessionId)!;
-
-      // Check if currentIndex is out of bounds
-      if (cache.currentIndex >= cache.blocks.length) {
-        console.log(`📭 [CACHE] All blocks completed (${cache.currentIndex}/${cache.blocks.length})`);
-        res.json({ completion: '', allBlocksCompleted: true });
-        return;
-      }
-
-      const currentLine = cache.blocks[cache.currentIndex];
-      const blockLevel = determineBlockLevel(subjectId, currentLine);
-
-      // Log KC info for current line (cache hit)
-      const kcInfo = currentLine.kcs.length > 0
-        ? currentLine.kcs.map(kc => `${kc.name}(${kc.id})`).join(', ')
-        : 'No KCs';
-      console.log(`🔄 [CACHE] Line ${cache.currentIndex + 1}/${cache.blocks.length}: "${currentLine.code.trim()}"`);
-      console.log(`   KCs: ${kcInfo}`);
-      console.log(`   Level: ${blockLevel} (Student: ${subjectId})`);
-
-      // If Level 2, signal client to disable autocomplete
-      const shouldDisable = blockLevel === 2;
-      if (shouldDisable) {
-        console.log(`   ⚠️ Level 2 detected - client will disable autocomplete`);
-      }
-
-      res.json({
-        completion: currentLine.code,
-        subjectId,
-        timestamp: new Date().toISOString(),
-        blockIndex: cache.currentIndex,
-        totalBlocks: cache.blocks.length,
-        blockLevel,
-        disableAutocomplete: shouldDisable,
-      });
-      return;
-    }
-
-    // No cache: Generate full solution from Claude
+    // AUTOCOMPLETE MODE: Generate full solution and return all blocks to client
     const prompt = buildPrompt(prefix, suffix, language, fileName);
 
     const maxTokens = 512;
@@ -316,8 +216,16 @@ completeRouter.post('/', async (req: Request, res: Response) => {
     const fullCode = prefix + fullCompletion;
     const prefixLineCount = prefix.split('\n').length;
 
-    // Split completion into lines first (all lines, not filtered)
-    const completionLinesRaw = fullCompletion.split('\n').filter(line => line.trim() !== '');
+    // Split completion into lines first (filter empty lines and meta messages)
+    const completionLinesRaw = fullCompletion.split('\n').filter(line => {
+      const trimmed = line.trim();
+      if (trimmed === '') return false; // Skip empty lines
+      if (isMetaMessage(trimmed)) {
+        console.log(`⏭️ Skipping meta message: "${trimmed}"`);
+        return false; // Skip meta messages
+      }
+      return true;
+    });
 
     // Analyze fullCode with LLM to get context-aware KC detection
     const { analyzeCodeLineByLine } = await import('../modules/code2block/llmKcMapper');
@@ -373,43 +281,32 @@ completeRouter.post('/', async (req: Request, res: Response) => {
       });
     }
 
-    // Store in cache if sessionId provided
+    // Return all blocks to client for local caching
     if (sessionId && assignmentId && lineBlocks.length > 0) {
-      blockCache.set(sessionId, {
-        blocks: lineBlocks,
-        currentIndex: 0,
-        fullCode: fullCompletion,
-        studentId: subjectId,
-        assignmentId,
-        sessionId,
+      // Add level information to each block
+      const blocksWithLevel = lineBlocks.map(block => {
+        const blockLevel = determineBlockLevel(subjectId, block);
+        return {
+          ...block,
+          level: blockLevel
+        };
       });
 
-      // Return first line
-      const firstLine = lineBlocks[0];
-      const blockLevel = determineBlockLevel(subjectId, firstLine);
-
-      // Log KC info for first line (new generation)
-      const kcInfo = firstLine.kcs.length > 0
-        ? firstLine.kcs.map(kc => `${kc.name}(${kc.id})`).join(', ')
-        : 'No KCs';
-      console.log(`🆕 [NEW] Line 1/${lineBlocks.length}: "${firstLine.code.trim()}"`);
-      console.log(`   KCs: ${kcInfo}`);
-      console.log(`   Level: ${blockLevel} (Student: ${subjectId})`);
-
-      // If Level 2, signal client to disable autocomplete
-      const shouldDisable = blockLevel === 2;
-      if (shouldDisable) {
-        console.log(`   ⚠️ Level 2 detected - client will disable autocomplete`);
-      }
+      // Log summary
+      console.log(`🆕 [NEW] Generated ${blocksWithLevel.length} lines for client-side caching`);
+      blocksWithLevel.forEach((block, idx) => {
+        const kcInfo = block.kcs.length > 0
+          ? block.kcs.map(kc => `${kc.name}(${kc.id})`).join(', ')
+          : 'No KCs';
+        console.log(`   Line ${idx + 1}/${blocksWithLevel.length}: "${block.code.trim()}" (Level ${block.level}, KCs: ${kcInfo})`);
+      });
 
       res.json({
-        completion: firstLine.code,
+        blocks: blocksWithLevel,
+        fullCode: fullCompletion,
         subjectId,
         timestamp: new Date().toISOString(),
-        blockIndex: 0,
-        totalBlocks: lineBlocks.length,
-        blockLevel,
-        disableAutocomplete: shouldDisable,
+        totalBlocks: blocksWithLevel.length,
       });
     } else {
       // No sessionId: return full completion (fallback)

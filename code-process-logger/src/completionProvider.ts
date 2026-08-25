@@ -4,6 +4,20 @@ import * as https from 'https';
 import * as fs from 'fs';
 import * as path from 'path';
 
+interface CodeBlock {
+  id: string;
+  code: string;
+  type: string;
+  startLine: number;
+  endLine: number;
+  kcs: Array<{
+    id: string;
+    name: string;
+    category: string;
+  }>;
+  level?: number;
+}
+
 /**
  * InlineCompletionProvider-based completion - shows real ghost text
  */
@@ -20,9 +34,16 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
   private isQuestionMode: boolean = false;
   private matchedChars: number = 0;
   private currentLineCompleted: boolean = false; // Track if current line is fully typed (waiting for Enter)
-  private shouldRequestNextLine: boolean = false; // Track if we should request next line from server
+  private completedLineNumber: number = -1; // Track which line was completed (for Enter detection)
+  private shouldRequestNextLine: boolean = false; // Track if we should request next line from server (deprecated - now handled locally)
   private _shouldClearCache: boolean = false; // Flag to clear cache on next request
   private waitingForEnterAfterLevel2: boolean = false; // Level 2: wait for Enter before re-enabling
+
+  // Client-side block caching
+  private cachedBlocks: CodeBlock[] = [];
+  private currentBlockIndex: number = 0;
+  private isAcceptingCompletion: boolean = false; // Flag to ignore onChange during Tab accept
+  private displayDelayTimer: NodeJS.Timeout | undefined; // Timer for delayed display (Level 3)
 
   private get shouldClearCache(): boolean {
     return this._shouldClearCache;
@@ -36,6 +57,7 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
   private disposables: vscode.Disposable[] = [];
   private onDisableCallback: (() => void) | undefined;
   private onLogEventCallback: ((eventType: string, data?: any) => void) | undefined;
+  private editTracker: any | undefined; // Reference to EditTracker to notify when showing cached content
   private decorationType: vscode.TextEditorDecorationType;
   private insertedNewlinesCount: number = 0; // Track how many temporary newlines we inserted
 
@@ -67,8 +89,12 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
 
     if (!this.cachedCompletion || !this.cachedPosition) {
       this.logToFile('provideInlineCompletionItems', { noCache: true });
+      console.log(`[PROVIDE] No cache - cachedCompletion=${!!this.cachedCompletion}, cachedPosition=${!!this.cachedPosition}`);
       return undefined;
     }
+
+    console.log(`[PROVIDE] Called with position ${position.line}:${position.character}, cached at ${this.cachedPosition.line}:${this.cachedPosition.character}`);
+    console.log(`[PROVIDE] Completion: "${this.cachedCompletion}", matchedChars=${this.matchedChars}`);
 
     this.logToFile('provideInlineCompletionItems', {
       hasCache: true,
@@ -106,6 +132,7 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     }
 
     if (displayCompletion.length > 0) {
+      console.log(`[PROVIDE] Returning: "${displayCompletion.substring(0, 50)}"`);
       this.logToFile('provideInlineCompletionItems', {
         returning: true,
         displayLength: displayCompletion.length,
@@ -115,6 +142,7 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       return [item];
     }
 
+    console.log(`[PROVIDE] Empty display - not returning completion`);
     this.logToFile('provideInlineCompletionItems', { emptyDisplay: true });
     return undefined;
   }
@@ -262,12 +290,104 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     console.log('🔵 [CLIENT] requestNextLine called');
     this.logToFile('requestNextLine', { started: true });
 
-    // Set flag to request next line from server
-    this.shouldRequestNextLine = true;
+    // Check if we have cached blocks
+    if (this.cachedBlocks.length === 0) {
+      console.log('⚠️ [CLIENT] No cached blocks - requesting from server');
+      this.shouldClearCache = true;
+      await this.triggerCompletion(false);
+      return;
+    }
 
-    // Trigger new completion (will request next line from server)
-    await this.triggerCompletion(false);
-    console.log('🔵 [CLIENT] requestNextLine completed');
+    // Move to next block
+    this.currentBlockIndex++;
+
+    // Check if we've reached the end
+    if (this.currentBlockIndex >= this.cachedBlocks.length) {
+      console.log(`📭 [CLIENT] All blocks completed (${this.currentBlockIndex}/${this.cachedBlocks.length})`);
+      this.cachedBlocks = [];
+      this.currentBlockIndex = 0;
+      this.setEnabled(false);
+
+      if (this.onDisableCallback) {
+        this.onDisableCallback();
+      }
+
+      this.logToFile('requestNextLine', { allBlocksCompleted: true });
+      return;
+    }
+
+    // Get next block from local cache
+    const nextBlock = this.cachedBlocks[this.currentBlockIndex];
+
+    // Log next block info
+    const kcInfo = nextBlock.kcs?.length > 0
+      ? nextBlock.kcs.map(kc => `${kc.name}(${kc.id})`).join(', ')
+      : 'No KCs';
+    console.log(`📦 [CLIENT] Next block from cache: ${this.currentBlockIndex + 1}/${this.cachedBlocks.length}`);
+    console.log(`   "${nextBlock.code.trim()}" (Level ${nextBlock.level}, KCs: ${kcInfo})`);
+
+    // Check if next block is Level 2 - disable autocomplete
+    if (nextBlock.level === 2) {
+      console.log(`⚠️ [CLIENT] Next block is Level 2 - disabling autocomplete`);
+      this.setEnabled(false);
+      this.waitingForEnterAfterLevel2 = true;
+
+      if (this.onDisableCallback) {
+        this.onDisableCallback();
+      }
+
+      this.logToFile('requestNextLine', { level2Disabled: true });
+      return;
+    }
+
+    // Update cached completion with next block's code
+    this.cachedCompletion = nextBlock.code;
+    this.matchedChars = 0;
+
+    // Notify EditTracker that autocomplete is active (showing cached content)
+    if (this.editTracker) {
+      this.editTracker.markAutocompleteActive();
+    }
+
+    // Hide any existing inline suggestion first
+    await vscode.commands.executeCommand('editor.action.inlineSuggest.hide');
+
+    // Small delay to let VSCode settle after Enter key
+    // This also ensures cursor position is updated before we cache it
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // NOW set cachedPosition after VSCode has settled
+    this.cachedPosition = vscode.window.activeTextEditor?.selection.active;
+    console.log(`🔵 [CLIENT] Updated cachedPosition to ${this.cachedPosition?.line}:${this.cachedPosition?.character}`);
+
+    // Set context variable for Tab keybinding
+    vscode.commands.executeCommand('setContext', 'codeProcessLogger.hasCompletion', true);
+
+    // Level 1 & 3: Add 2-second delay before showing ghost text
+    // This gives the user time to start typing without being interrupted
+    if (this.level === 1 || this.level === 3) {
+      console.log(`⏱️ [LV${this.level}] Waiting 2 seconds before showing ghost text...`);
+
+      // Clear any existing delay timer
+      if (this.displayDelayTimer) {
+        clearTimeout(this.displayDelayTimer);
+      }
+
+      // Set new delay timer
+      this.displayDelayTimer = setTimeout(async () => {
+        console.log(`✅ [LV${this.level}] 2 seconds elapsed - showing ghost text`);
+        await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+        this.displayDelayTimer = undefined;
+      }, 2000);
+
+      this.logToFile('requestNextLine', { completed: true, blockIndex: this.currentBlockIndex, delayedDisplay: true });
+      console.log('🔵 [CLIENT] requestNextLine completed (delayed display)');
+    } else {
+      // Level 2: No autocomplete
+      await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+      this.logToFile('requestNextLine', { completed: true, blockIndex: this.currentBlockIndex });
+      console.log('🔵 [CLIENT] requestNextLine completed');
+    }
   }
 
   private async showGhostTextDecoration(editor: vscode.TextEditor, position: vscode.Position, completion: string): Promise<void> {
@@ -363,29 +483,24 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     retryCount: number = 0,
   ): Promise<string | null> {
     return new Promise((resolve) => {
-      const requestNextBlock = this.shouldRequestNextLine;
       const clearCacheFlag = this.shouldClearCache;
       const body = JSON.stringify({
-        prefix: prefix.slice(-2000),  // 원래대로 복구
-        suffix: suffix.slice(0, 500),  // 원래대로 복구
+        prefix: prefix.slice(-2000),
+        suffix: suffix.slice(0, 500),
         language,
         fileName,
         subjectId: this.subjectId,
         assignmentId: this.assignmentId,
         sessionId: this.sessionId,
         questionMode,
-        requestNextBlock,
         clearCache: clearCacheFlag,
       });
 
-      console.log(`🔵 [CLIENT] Fetching completion: requestNextBlock=${requestNextBlock}, clearCache=${clearCacheFlag}`);
+      console.log(`🔵 [CLIENT] Fetching completion: clearCache=${clearCacheFlag}`);
 
-      // Reset flags after building request body
+      // Reset flag after building request body
       if (this.shouldClearCache) {
         this.shouldClearCache = false;
-      }
-      if (this.shouldRequestNextLine) {
-        this.shouldRequestNextLine = false;
       }
 
       const url = new URL(`${this.serverUrl}/api/complete`);
@@ -428,54 +543,56 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
                 return;
               }
 
-              // Update level if blockLevel is provided
-              if (json.blockLevel) {
-                this.setLevel(json.blockLevel);
-                console.log(`🎯 Block level set to: ${json.blockLevel}`);
-              }
+              // NEW: Handle blocks array response
+              if (json.blocks && Array.isArray(json.blocks) && json.blocks.length > 0) {
+                console.log(`📦 [CLIENT] Received ${json.blocks.length} blocks, caching locally`);
 
-              // Check if Level 2 - disable autocomplete (student types on their own)
-              if (json.disableAutocomplete) {
-                console.log(`⚠️ [CLIENT] Level 2 detected - disabling autocomplete, waiting for Enter`);
-                this.setEnabled(false);
-                this.waitingForEnterAfterLevel2 = true; // Prevent re-enable until Enter
+                // Store all blocks locally
+                this.cachedBlocks = json.blocks;
+                this.currentBlockIndex = 0;
 
-                // Notify EditTracker to reset state (will re-enable after idle, but we'll block it)
-                if (this.onDisableCallback) {
-                  this.onDisableCallback();
+                // Get first block
+                const firstBlock = this.cachedBlocks[0];
+
+                // Log first block info
+                const kcInfo = firstBlock.kcs?.length > 0
+                  ? firstBlock.kcs.map((kc: any) => `${kc.name}(${kc.id})`).join(', ')
+                  : 'No KCs';
+                console.log(`🆕 [CLIENT] First block: "${firstBlock.code.trim()}" (Level ${firstBlock.level}, KCs: ${kcInfo})`);
+
+                // Check if first block is Level 2 - disable autocomplete
+                if (firstBlock.level === 2) {
+                  console.log(`⚠️ [CLIENT] First block is Level 2 - disabling autocomplete`);
+                  this.setEnabled(false);
+                  this.waitingForEnterAfterLevel2 = true;
+
+                  if (this.onDisableCallback) {
+                    this.onDisableCallback();
+                  }
+
+                  resolve(''); // Return empty
+                  return;
                 }
 
-                resolve(''); // Return empty to prevent ghost text
+                // Notify EditTracker that autocomplete is active (showing server content)
+                if (this.editTracker) {
+                  this.editTracker.markAutocompleteActive();
+                }
+
+                // Return first block's code
+                resolve(firstBlock.code || null);
                 return;
               }
 
-              // Check if all blocks completed - disable autocomplete to trigger fresh request after idle
-              if (json.allBlocksCompleted) {
-                console.log(`🔵 [CLIENT] All blocks completed - disabling autocomplete for new context`);
-
-                // Only set shouldClearCache if this was NOT a requestNextBlock request
-                // (if it was requestNextBlock, we're just at the end of the cache, don't clear it)
-                if (!requestNextBlock) {
-                  this.shouldClearCache = true;
-                }
-                this.currentLineCompleted = false;
-
-                // Clear cache and disable autocomplete
-                this.cachedCompletion = '';
-                this.cachedPosition = undefined;
-                this.setEnabled(false);
-
-                // Notify EditTracker to reset state (will re-enable after idle)
-                if (this.onDisableCallback) {
-                  this.onDisableCallback();
-                }
-
-                resolve(''); // Return empty
+              // OLD: Fallback for legacy completion response (questionMode or no sessionId)
+              if (json.completion) {
+                console.log(`🔵 [CLIENT] Legacy completion: "${json.completion.substring(0, 50)}"`);
+                resolve(json.completion || null);
                 return;
               }
 
-              console.log(`🔵 [CLIENT] Completion: "${(json.completion || '').substring(0, 50)}"`);
-              resolve(json.completion || null);
+              // Empty response
+              resolve(null);
             } catch (e) {
               console.log(`🔵 [CLIENT] Parse error: ${e}`);
               resolve(null);
@@ -567,6 +684,10 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     this.onDisableCallback = callback;
   }
 
+  setEditTracker(editTracker: any): void {
+    this.editTracker = editTracker;
+  }
+
   setOnLogEventCallback(callback: (eventType: string, data?: any) => void): void {
     this.onLogEventCallback = callback;
   }
@@ -593,9 +714,19 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     this.matchedChars = 0;
     this.isQuestionMode = false;
 
+    // Clear delayed display timer (Level 3)
+    if (this.displayDelayTimer) {
+      clearTimeout(this.displayDelayTimer);
+      this.displayDelayTimer = undefined;
+    }
+
     // Set flag to clear cache if student typed different code
     if (clearCache) {
       this.shouldClearCache = true;
+      // Clear local block cache as well
+      this.cachedBlocks = [];
+      this.currentBlockIndex = 0;
+      console.log('🗑️ [CLIENT] Local block cache cleared');
     }
 
     // Clear context variable
@@ -612,18 +743,29 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     this.logToFile('handleTabPress', { level: this.level, hasCompletion: !!this.cachedCompletion });
 
     const editor = vscode.window.activeTextEditor;
-    if (!editor || !this.cachedCompletion) {
-      console.log(`🔵 [TAB] No editor or completion, exiting`);
+    if (!editor) {
+      console.log(`🔵 [TAB] No editor, exiting`);
       return;
     }
 
     if (this.level === 1) {
       // Level 1: Tab does nothing special, just insert tab character
+      if (!this.cachedCompletion) {
+        await vscode.commands.executeCommand('tab');
+        return;
+      }
       await vscode.commands.executeCommand('tab');
     } else if (this.level === 2) {
       // Level 2: Tab does nothing special, just insert tab character
       await vscode.commands.executeCommand('tab');
     } else if (this.level === 3) {
+      // Level 3: Check if we have a completion to accept
+      if (!this.cachedCompletion) {
+        console.log(`🔵 [TAB] Level 3: No completion, inserting tab character`);
+        await vscode.commands.executeCommand('tab');
+        return;
+      }
+
       // Level 3: Tab accepts the current line and requests next line
       const wasQuestionMode = this.isQuestionMode;
 
@@ -635,42 +777,52 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
         wasQuestionMode
       });
 
-      // Level 3: Save cursor position BEFORE accepting (this is where "[tab] " will be inserted)
-      const prefixStartPosition = editor.selection.active;
-      console.log(`🔵 [TAB] Cursor position before commit: ${prefixStartPosition.line}:${prefixStartPosition.character}`);
+      // Level 3: Save line number before commit
+      const lineNumber = editor.selection.active.line;
+      console.log(`🔵 [TAB] Line before commit: ${lineNumber}`);
+
+      // Set flag to ignore onChange events during Tab accept
+      this.isAcceptingCompletion = true;
 
       // Accept the inline suggestion (includes "[tab] " prefix)
       console.log(`🔵 [TAB] Committing inline suggestion...`);
       await vscode.commands.executeCommand('editor.action.inlineSuggest.commit');
 
-      // Level 3: Immediately remove "[tab] " prefix
-      await editor.edit(editBuilder => {
-        const prefixRange = new vscode.Range(
-          prefixStartPosition,
-          prefixStartPosition.translate(0, '[tab] '.length)
-        );
-        editBuilder.delete(prefixRange);
-      }, { undoStopBefore: false, undoStopAfter: false });
-      console.log(`🔵 [TAB] Prefix removed immediately`);
+      // Level 3: Remove "[tab] " prefix from the committed line
+      const currentLine = editor.document.lineAt(lineNumber);
+      const lineText = currentLine.text;
+      const tabPrefixIndex = lineText.indexOf('[tab] ');
+
+      if (tabPrefixIndex !== -1) {
+        await editor.edit(editBuilder => {
+          const prefixRange = new vscode.Range(
+            new vscode.Position(lineNumber, tabPrefixIndex),
+            new vscode.Position(lineNumber, tabPrefixIndex + '[tab] '.length)
+          );
+          editBuilder.delete(prefixRange);
+        }, { undoStopBefore: false, undoStopAfter: false });
+        console.log(`🔵 [TAB] Prefix removed from line ${lineNumber}, index ${tabPrefixIndex}`);
+      } else {
+        console.log(`🔵 [TAB] Warning: [tab] prefix not found in line text: "${lineText}"`);
+      }
+
+      // Reset flag after edits are done
+      this.isAcceptingCompletion = false;
 
       // Level 3: Log Accept event (Tab pressed to accept)
       if (this.onLogEventCallback) {
         this.onLogEventCallback('AutocompleteAccept');
       }
 
-      // Clear cached data
+      // Clear cached data (but not block cache!)
       console.log(`🔵 [TAB] Clearing ghost...`);
-      await this.clearGhost();
+      await this.clearGhost(); // clearCache=false by default
 
-      // Immediately request next line from cache
+      // Mark line as completed - will request next line when Enter is pressed
       this.currentLineCompleted = true;
-      this.shouldRequestNextLine = true; // Set flag to request next block
-      this.shouldClearCache = false; // Don't clear cache when requesting next line
-      console.log(`🔵 [TAB] Line completed, requesting next line from cache`);
-      this.logToFile('handleTabPress', { accepted: true, requestingNextLine: true });
-
-      // Request next block from cache (no LLM call needed)
-      await this.triggerCompletion(false); // questionMode=false
+      this.completedLineNumber = lineNumber; // Save line number for Enter detection
+      console.log(`🔵 [TAB] Line completed (line ${this.completedLineNumber}), waiting for Enter to request next line`);
+      this.logToFile('handleTabPress', { accepted: true, waitingForEnter: true });
     }
   }
 
@@ -744,6 +896,19 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
 
     // Listen for text changes via document change events
     const changeDisposable = vscode.workspace.onDidChangeTextDocument(async e => {
+      // Ignore changes during Tab accept (prefix removal)
+      if (this.isAcceptingCompletion) {
+        console.log(`[CHANGE] Ignoring change during Tab accept`);
+        return;
+      }
+
+      // Level 1 & 3: Cancel delayed display if user starts typing
+      if ((this.level === 1 || this.level === 3) && this.displayDelayTimer && e.contentChanges.length > 0) {
+        console.log(`⏹️ [LV${this.level}] User started typing - canceling delayed ghost display`);
+        clearTimeout(this.displayDelayTimer);
+        this.displayDelayTimer = undefined;
+      }
+
       const editor = vscode.window.activeTextEditor;
 
       // Debug log for all changes (Level 1 only)
@@ -759,18 +924,40 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       }
 
       // Level 1 only: Check for Enter key after line completion (BEFORE early return)
-      if (this.level === 1 && this.currentLineCompleted) {
-        console.log(`[LV1] 🔍 Line completed state, checking for Enter. Changes: ${e.contentChanges.length}`);
+      // Level 1 & 3: Check for Enter after line completion (Tab accept)
+      if ((this.level === 1 || this.level === 3) && this.currentLineCompleted) {
+        console.log(`[LV${this.level}] 🔍 Line completed state, checking for Enter. Changes: ${e.contentChanges.length}`);
+
+        // Method 1: Check contentChanges for newline
+        let enterDetected = false;
         for (const change of e.contentChanges) {
-          console.log(`[LV1] 🔍 Change: text="${change.text.replace(/\n/g, '\\n').replace(/\r/g, '\\r')}", rangeLength=${change.rangeLength}`);
+          console.log(`[LV${this.level}] 🔍 Change: text="${change.text.replace(/\n/g, '\\n').replace(/\r/g, '\\r')}", rangeLength=${change.rangeLength}`);
           // Check if Enter was pressed (newline inserted)
           if (change.text.includes('\n') || change.text.includes('\r')) {
-            console.log(`[LV1] ✅ Enter after line completion - requesting next line`);
-            this.currentLineCompleted = false;
-            this.logToFile('level1Validation', { enterPressed: true, requestingNextLine: true });
-            await this.requestNextLine();
-            return;
+            enterDetected = true;
+            break;
           }
+        }
+
+        // Method 2: Check cursor position (moved to next line)
+        // This handles cases where contentChanges is empty (type command not registered)
+        if (!enterDetected && this.completedLineNumber >= 0) {
+          const currentLine = editor.selection.active.line;
+          if (currentLine > this.completedLineNumber) {
+            console.log(`[LV${this.level}] 🔍 Cursor moved from line ${this.completedLineNumber} to ${currentLine} - Enter detected via position`);
+            enterDetected = true;
+          }
+        }
+
+        if (enterDetected) {
+          console.log(`[LV${this.level}] ✅ Enter detected - requesting next line`);
+          this.currentLineCompleted = false;
+          this.completedLineNumber = -1;
+          this.logToFile('levelValidation', { level: this.level, enterPressed: true, requestingNextLine: true });
+          // Don't call default:type - Enter is already typed (this is onChange!)
+          // Just request next line
+          await this.requestNextLine();
+          return;
         }
       }
 
@@ -818,13 +1005,14 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
             if (this.matchedChars >= expectedCompletion.length) {
               await this.clearGhost();
               this.currentLineCompleted = true;
+              this.completedLineNumber = currentPosition.line; // Save line number for Enter detection
 
               // Log Follow event
               if (this.onLogEventCallback) {
                 this.onLogEventCallback('AutocompleteFollow');
               }
 
-              console.log(`[LV1] ✅ Line completed, waiting for Enter`);
+              console.log(`[LV1] ✅ Line completed (line ${this.completedLineNumber}), waiting for Enter`);
               this.logToFile('level1Validation', { status: 'completed', waitingForEnter: true });
             } else {
               // Still matching - re-trigger ghost
@@ -962,7 +1150,7 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
         console.log(`[COMP] Enter after Tab accept - requesting next line`);
         await vscode.commands.executeCommand('default:type', { text: char });
         this.currentLineCompleted = false;
-        this.logToFile('handleLevel3Type', { enterAfterTabAccept: true, requestingNextLine: true });
+        this.logToFile('handleLevel3Type', { enterAfterTabAccept: true, requestingNextLine: true, reason: 'tab_accept' });
         await this.requestNextLine();
         return;
       } else {
@@ -986,8 +1174,18 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
         if (this.currentLineCompleted) {
           // Line was completed, request next line
           this.currentLineCompleted = false;
-          this.logToFile('handleLevel3Type', { enterPressed: true, requestingNextLine: true });
-          await this.requestNextLine();
+
+          // Check if cache already has the next line to avoid duplicate request
+          if (!this.cachedCompletion || this.matchedChars >= this.cachedCompletion.length) {
+            // No cache or cache exhausted - request next line from server
+            this.logToFile('handleLevel3Type', { enterPressed: true, requestingNextLine: true, reason: 'no_cache' });
+            await this.requestNextLine();
+          } else {
+            // Cache already has next line - just trigger ghost display
+            console.log(`[COMP] Enter key: cache already has next line, skipping request`);
+            this.logToFile('handleLevel3Type', { enterPressed: true, requestingNextLine: false, reason: 'cache_hit' });
+            await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+          }
         }
         // If line not completed, just return - don't trigger new completion
         return;

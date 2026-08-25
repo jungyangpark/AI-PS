@@ -443,6 +443,16 @@ export class EditTracker implements vscode.Disposable {
     }, this.midPauseMs);
   }
 
+  /**
+   * Notify EditTracker that autocomplete is now showing content (from cache or server)
+   * This prevents midPauseTimer from triggering unnecessary server requests
+   */
+  markAutocompleteActive(): void {
+    console.log('[EDIT] markAutocompleteActive - autocomplete is now showing content');
+    this.autocompleteEnabled = true;
+    this.clearTimers(); // Clear any pending midPauseTimer
+  }
+
   dispose(): void {
     this.stop();
   }

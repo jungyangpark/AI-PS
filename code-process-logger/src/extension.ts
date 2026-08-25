@@ -220,6 +220,9 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
     }
   });
 
+  // Pass editTracker reference to completionProvider
+  completionProvider.setEditTracker(editTracker);
+
   // Set event logging callback for Follow/Reject/Accept events
   completionProvider.setOnLogEventCallback((eventType: string, data?: any) => {
     // Only log if assignment is active (not "-")
