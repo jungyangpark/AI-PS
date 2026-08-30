@@ -621,6 +621,9 @@ async function setAssignmentId(context: vscode.ExtensionContext): Promise<void> 
 
   await context.globalState.update('assignmentId', trimmedId);
 
+  // Log assignment registration
+  console.log(`📝 [ASSIGNMENT] User ${currentSubjectId} registered assignment: ${trimmedId}`);
+
   // Update button text regardless of session state
   assignmentButton.text = `$(file-code) Assignment: ${trimmedId}`;
 

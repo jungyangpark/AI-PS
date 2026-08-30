@@ -207,12 +207,6 @@ completeRouter.post('/', async (req: Request, res: Response) => {
     let fullCompletion = extractCompletion(response);
     fullCompletion = fixFirstLine(prefix, fullCompletion);
 
-    // Log full completion
-    console.log(`🤖 LLM completion (${fullCompletion.split('\n').length} lines):`);
-    fullCompletion.split('\n').forEach((line, idx) => {
-      console.log(`   ${idx + 1}: ${line}`);
-    });
-
     const fullCode = prefix + fullCompletion;
     const prefixLineCount = prefix.split('\n').length;
 
@@ -231,8 +225,8 @@ completeRouter.post('/', async (req: Request, res: Response) => {
     const { analyzeCodeLineByLine } = await import('../modules/code2block/llmKcMapper');
     const lineMappings = await analyzeCodeLineByLine(fullCode);
 
-    // Log KC analysis results
-    console.log(`🔍 KC Analysis results (${lineMappings.length} lines):`);
+    // Log KC analysis results with user ID
+    console.log(`🔍 KC Analysis results for ${subjectId} (${lineMappings.length} lines):`);
     lineMappings.forEach(mapping => {
       console.log(`   Line ${mapping.line}: "${mapping.code}" → KCs: [${mapping.kcs.join(', ')}]`);
     });
@@ -240,17 +234,19 @@ completeRouter.post('/', async (req: Request, res: Response) => {
     // Filter lines that belong to the completion
     const completionKCMappings = lineMappings.filter(mapping => mapping.line >= prefixLineCount);
 
-    // Create a map: line number -> KC list
-    const lineKCMap = new Map<number, string[]>();
+    // Create a map: code content -> KC list (instead of line number)
+    const codeKCMap = new Map<string, string[]>();
     completionKCMappings.forEach(mapping => {
-      lineKCMap.set(mapping.line, mapping.kcs);
+      const trimmedCode = mapping.code.trim();
+      codeKCMap.set(trimmedCode, mapping.kcs);
     });
 
     // Convert all completion lines to CodeBlocks (with or without KCs)
     const { KC_NAME_TO_ID } = require('../modules/studentEvaluation/kcMapping');
     const lineBlocks: CodeBlock[] = completionLinesRaw.map((line, idx) => {
       const lineNumber = prefixLineCount + idx;
-      const kcs = lineKCMap.get(lineNumber) || []; // Empty array if no KC found
+      const trimmedLine = line.trim();
+      const kcs = codeKCMap.get(trimmedLine) || []; // Match by code content instead of line number
 
       return {
         id: `L${idx}`,
@@ -266,7 +262,9 @@ completeRouter.post('/', async (req: Request, res: Response) => {
       };
     });
 
-    console.log(`📊 Final blocks: ${lineBlocks.length} lines (${completionKCMappings.length} with KCs, ${lineBlocks.length - completionKCMappings.length} without KCs)`);
+    const blocksWithKCs = lineBlocks.filter(b => b.kcs.length > 0).length;
+    const blocksWithoutKCs = lineBlocks.filter(b => b.kcs.length === 0).length;
+    console.log(`📊 Final blocks: ${lineBlocks.length} lines (${blocksWithKCs} with KCs, ${blocksWithoutKCs} without KCs)`);
 
     // If no lines in completion, return error
     if (lineBlocks.length === 0) {

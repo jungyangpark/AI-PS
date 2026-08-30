@@ -286,10 +286,11 @@ studentsRouter.post('/:id/fix-level', (req: Request, res: Response) => {
   } else {
     // Fix all KC levels to specified level
     students[id].fixedLevel = level;
+    students[id].level = level;  // Also update global level field
     for (const kc in students[id].kcLevels) {
       students[id].kcLevels[kc] = level;
     }
-    console.log(`[Fix Level] Student ${id}: all KC levels fixed to ${level}`);
+    console.log(`[Fix Level] Student ${id}: all KC levels and global level fixed to ${level}`);
   }
 
   saveStudents(students);
