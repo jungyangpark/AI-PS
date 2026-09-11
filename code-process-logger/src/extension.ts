@@ -133,8 +133,12 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
   // Login to server
   try {
     const loginResult = await serverRequest(serverUrl, '/api/students/login', { studentId: subjectId, password });
-    // studentLevel = loginResult.level;
-    // currentLevel = studentLevel;
+    // Override with server-side level (supports fix-level API)
+    if (loginResult.level) {
+      studentLevel = loginResult.level;
+      currentLevel = studentLevel;
+      console.log(`✅ [LOGIN] Server-side level: ${studentLevel}`);
+    }
     await context.globalState.update('lastSubjectId', subjectId);
     // if (loginResult.status === 'password_set') {
     //   vscode.window.showInformationMessage('비밀번호가 설정되었습니다! (Password set successfully)');

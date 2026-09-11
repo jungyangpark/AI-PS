@@ -45,3 +45,4 @@ opencode.jsonc
 .vscode/
 # Added by code-review-graph
 .*
+graphify-out/
