@@ -1,11 +1,17 @@
-def countRecur(i, n):
-    if i >= n:
-        return 1
-
-    take = countRecur(i + 2, n)
-    noTake = countRecur(i + 1, n)
-
-    return take + noTake
-
 n = int(input())
-print(countRecur(0, n))
+
+foods = {}
+
+for i in range(n):
+    name = input()
+    price = int(input())
+    foods[name] = price
+
+
+foods["lamb"] = 50
+
+print(foods["fish"])
+
+foods["fish"] = 100
+
+print(foods)

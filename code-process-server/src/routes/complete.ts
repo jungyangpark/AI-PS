@@ -3,6 +3,53 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as fs from 'fs';
 import * as path from 'path';
 import { code2BlockAnalyzer, CodeBlock } from '../modules/code2block';
+import { loadAssignmentConfig } from '../modules/assignmentConfig';
+
+/**
+ * Load the GT (reference solution) code for an assignment.
+ * Uses gtCodePath from the assignment config, falling back to gt_codes/gt_{id}.py.
+ * Returns null if unavailable or empty.
+ */
+function loadGTCode(assignmentId?: string): string | null {
+  if (!assignmentId || !/^[\w-]+$/.test(assignmentId)) {
+    return null;
+  }
+  try {
+    const config = loadAssignmentConfig(assignmentId) as any;
+    const candidates = [
+      config?.gtCodePath,
+      path.join(process.cwd(), 'gt_codes', `gt_${assignmentId}.py`),
+    ].filter(Boolean) as string[];
+
+    for (const p of candidates) {
+      if (fs.existsSync(p)) {
+        const code = fs.readFileSync(p, 'utf-8').trim();
+        if (code) {
+          return code;
+        }
+      }
+    }
+  } catch (error) {
+    console.error(`Failed to load GT code for assignment ${assignmentId}:`, error);
+  }
+  return null;
+}
+
+function buildReferenceSection(gtCode: string | null, language: string): string {
+  if (!gtCode) {
+    return '';
+  }
+  return `
+Reference solution for this assignment (use it as a guide, DO NOT output it verbatim):
+\`\`\`${language}
+${gtCode}
+\`\`\`
+How to use the reference:
+- Follow the reference's approach, algorithm, and line order for the NEXT step after the cursor
+- Adapt to the student's existing variable names and structure (do not rename their variables)
+- Skip any step the student has already written; only output what comes next
+`;
+}
 
 const DATA_DIR = process.env.LOG_DIR || './logs';
 const STUDENTS_FILE = path.join(DATA_DIR, 'students.json');
@@ -189,11 +236,15 @@ completeRouter.post('/', async (req: Request, res: Response) => {
 
     // QUESTION MODE: Use existing non-cached flow
     if (isQuestionMode) {
-      return await handleQuestionMode(req, res, anthropic, prefix, suffix, language, fileName, subjectId);
+      return await handleQuestionMode(req, res, anthropic, prefix, suffix, language, fileName, subjectId, assignmentId);
     }
 
     // AUTOCOMPLETE MODE: Generate full solution and return all blocks to client
-    const prompt = buildPrompt(prefix, suffix, language, fileName);
+    const gtCode = loadGTCode(assignmentId);
+    console.log(gtCode
+      ? `📘 Using GT code as reference for assignment ${assignmentId}`
+      : `📘 No GT code available for assignment ${assignmentId ?? '(none)'}`);
+    const prompt = buildPrompt(prefix, suffix, language, fileName, gtCode);
 
     const maxTokens = 512;
     const response = await retryWithBackoff(async () => {
@@ -330,9 +381,10 @@ async function handleQuestionMode(
   suffix: string,
   language: string,
   fileName: string,
-  subjectId: string
+  subjectId: string,
+  assignmentId?: string
 ) {
-  const prompt = buildQuestionPrompt(prefix, suffix, language, fileName);
+  const prompt = buildQuestionPrompt(prefix, suffix, language, fileName, loadGTCode(assignmentId));
 
   const response = await retryWithBackoff(async () => {
     return await anthropic.messages.create({
@@ -355,7 +407,7 @@ async function handleQuestionMode(
 /**
  * Build prompt for question-answering mode (triggered by Shift+Escape)
  */
-function buildQuestionPrompt(prefix: string, suffix: string, language: string, fileName: string): string {
+function buildQuestionPrompt(prefix: string, suffix: string, language: string, fileName: string, gtCode: string | null = null): string {
   // Extract question from last comment
   const lines = prefix.split('\n');
   let question = '';
@@ -391,7 +443,7 @@ CRITICAL RULES:
 5. DO NOT say "Wait", "Actually", "Or", "Here's" or any explanations
 6. If they ask "when to return X", just show the condition or condition+return - NOT the entire function logic
 7. NO leading indentation - start from column 0
-
+${buildReferenceSection(gtCode, language)}
 Code context (DO NOT REPEAT THIS):
 \`\`\`${language}
 ${codeContext}
@@ -400,7 +452,7 @@ ${codeContext}
 Output ONLY what they asked for:`;
 }
 
-function buildPrompt(prefix: string, suffix: string, language: string, fileName: string): string {
+function buildPrompt(prefix: string, suffix: string, language: string, fileName: string, gtCode: string | null = null): string {
   return `You are a code autocomplete assistant. Predict ONLY the next few lines at the cursor.
 
 CRITICAL RULES - FOLLOW STRICTLY:
@@ -415,7 +467,7 @@ CRITICAL RULES - FOLLOW STRICTLY:
 IMPORTANT: If the cursor is in the middle of a line (e.g., "if " is already typed),
 complete ONLY the rest of that line, then continue with new lines.
 DO NOT repeat the partial line that's already written.
-
+${buildReferenceSection(gtCode, language)}
 Code before cursor (DO NOT REPEAT THIS):
 \`\`\`${language}
 ${prefix}

@@ -1,12 +1,17 @@
-def find_min_max(nums, idx=0):
-    if idx == len(nums) - 1:
-        return nums[idx], nums[idx]
+n = int(input())
 
-    rest_min, rest_max = find_min_max(nums, idx + 1)
-    cur = nums[idx]
-    return min(cur, rest_min), max(cur, rest_max)
+foods = []
+for i in range(n):
+    food = input()
+    foods.append(food)
 
-s = input()
-nums = list(map(int, s.split()))
-min_num, max_num = find_min_max(nums)
-print(f"{min_num} {max_num}")
+foods_tuple = tuple(foods)
+print(foods_tuple)
+
+largest = foods_tuple[0]
+
+for food in foods_tuple:
+    if food > largest:
+        largest = food
+
+print(largest)

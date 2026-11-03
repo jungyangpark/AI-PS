@@ -1,19 +1,16 @@
-def find_max(arr, idx):
-    # 마지막 원소라면 그 원소가 최댓값
-    if idx == len(arr) - 1:
-        return arr[idx]
-
-    # 나머지 부분의 최댓값
-    max_rest = find_max(arr, idx + 1)
-
-    # 현재 원소와 비교
-    if arr[idx] > max_rest:
-        return arr[idx]
-    else:
-        return max_rest
-
-
 n = int(input())
-arr = list(map(int, input().split()))
 
-print(find_max(arr, 0))
+guests = []
+for i in range(n):
+    guest = input()
+    guests.append(guest)
+
+last_guest = guests[-1]
+guests = guests[:-1]
+
+guests.remove(guests[1])
+
+guests = guests[:2] + [last_guest] + guests[2:]
+
+print(last_guest)
+print(guests)
