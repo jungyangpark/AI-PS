@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as fs from 'fs';
 import * as path from 'path';
 import { UnitTestResult } from './unitTestRunner';
+import { modelParams, requestOptions, getResponseText } from '../../utils/claudeModel';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -61,17 +62,16 @@ Respond in JSON format:
 }`;
 
     const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
+      ...modelParams('low'),
+      max_tokens: 4096,
       messages: [{
         role: 'user',
         content: prompt
       }]
-    });
+    }, requestOptions());
 
-    // Extract text response
-    const textContent = response.content.find(block => block.type === 'text');
-    const responseText = textContent && 'text' in textContent ? textContent.text : '';
+    // Extract text response (skips thinking blocks)
+    const responseText = getResponseText(response);
 
     // Parse JSON response
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);

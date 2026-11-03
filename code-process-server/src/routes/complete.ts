@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { code2BlockAnalyzer, CodeBlock } from '../modules/code2block';
 import { loadAssignmentConfig } from '../modules/assignmentConfig';
+import { modelParams, requestOptions, getResponseText } from '../utils/claudeModel';
 
 /**
  * Load the GT (reference solution) code for an assignment.
@@ -246,13 +247,14 @@ completeRouter.post('/', async (req: Request, res: Response) => {
       : `📘 No GT code available for assignment ${assignmentId ?? '(none)'}`);
     const prompt = buildPrompt(prefix, suffix, language, fileName, gtCode);
 
-    const maxTokens = 512;
+    // Thinking tokens count toward max_tokens on Opus 5.5 - leave headroom
+    const maxTokens = 4096;
     const response = await retryWithBackoff(async () => {
       return await anthropic.messages.create({
-        model: 'claude-haiku-4-5-20251001',
+        ...modelParams('low'),
         max_tokens: maxTokens,
         messages: [{ role: 'user', content: prompt }],
-      });
+      }, requestOptions());
     }, 3);
 
     let fullCompletion = extractCompletion(response);
@@ -388,10 +390,10 @@ async function handleQuestionMode(
 
   const response = await retryWithBackoff(async () => {
     return await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 256,
+      ...modelParams('low'),
+      max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }],
-    });
+    }, requestOptions());
   }, 3);
 
   let completion = extractCompletion(response);
@@ -482,12 +484,9 @@ Your completion (NEW code only, with proper indentation):`;
 }
 
 function extractCompletion(response: Anthropic.Message): string {
-  if (!response.content || response.content.length === 0) {
-    return '';
-  }
-  const block = response.content[0];
-  if (block.type === 'text') {
-    let text = block.text.trim();
+  const rawText = getResponseText(response);
+  if (rawText) {
+    let text = rawText.trim();
 
     // Remove all markdown code blocks
     text = text.replace(/```\w*\n?/g, '').replace(/\n?```/g, '');

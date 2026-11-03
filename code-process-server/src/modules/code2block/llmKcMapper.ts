@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { KC_NAME_TO_ID, KC_ID_TO_NAME } from '../studentEvaluation/kcMapping';
+import { modelParams, requestOptions, getResponseText } from '../../utils/claudeModel';
 import { spawn } from 'child_process';
 
 let client: Anthropic | null = null;
@@ -256,13 +257,13 @@ function extractLineKCMappings(response: Anthropic.Message): LineKCMapping[] {
       return [];
     }
 
-    const block = response.content[0];
-    if (block.type !== 'text') {
-      console.warn('[LLM KC Mapper] Response is not text type');
+    const rawText = getResponseText(response);
+    if (!rawText) {
+      console.warn('[LLM KC Mapper] Response has no text block');
       return [];
     }
 
-    let text = block.text.trim();
+    let text = rawText.trim();
 
     // Remove markdown code blocks if present
     text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '');
@@ -374,10 +375,10 @@ export async function analyzeCodeLineByLine(code: string): Promise<LineKCMapping
     const prompt = buildKCDetectionPrompt(cleanedCode);
 
     const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 2048,
+      ...modelParams('low'),
+      max_tokens: 8192,
       messages: [{ role: 'user', content: prompt }],
-    });
+    }, requestOptions());
 
     const lineMappingsFromLLM = extractLineKCMappings(response);
 

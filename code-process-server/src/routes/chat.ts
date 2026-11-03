@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import Anthropic from '@anthropic-ai/sdk';
+import { modelParams, requestOptions, getResponseText } from '../utils/claudeModel';
 
 const router = Router();
 
@@ -66,15 +67,14 @@ IMPORTANT: The student is viewing their code in the editor. Always refer to thei
 
     // Call Claude API
     const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 2048,
+      ...modelParams('medium'),
+      max_tokens: 8192,
       system: systemPrompt,
       messages: messages,
-    });
+    }, requestOptions());
 
-    // Extract text response
-    const textContent = response.content.find(block => block.type === 'text');
-    const assistantResponse = textContent && 'text' in textContent ? textContent.text : 'No response generated';
+    // Extract text response (skips thinking blocks)
+    const assistantResponse = getResponseText(response) || 'No response generated';
 
     res.json({
       response: assistantResponse,
