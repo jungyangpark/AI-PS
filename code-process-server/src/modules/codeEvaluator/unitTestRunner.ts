@@ -142,7 +142,7 @@ export async function runPythonUnitTests(
       const safetyTimeout = 30000; // 30 seconds safety limit
 
       const testTimeout = test.timeout || safetyTimeout;
-      console.log(`        Time limit: ${(gtTime * 2).toFixed(2)}ms (GT: ${gtTime.toFixed(2)}ms)`);
+      console.log(`        No time limit (GT: ${gtTime.toFixed(2)}ms, safety timeout: ${testTimeout}ms)`);
 
       // Run 30 times to get stable measurements
       const times: number[] = [];
@@ -218,15 +218,7 @@ export async function runPythonUnitTests(
         results.memoryUsages.push(avgMemory);
         results.gtMemoryUsages.push(test.gtMemoryUsage || 0);
 
-        // Check if average time exceeds GT time * 2 - if so, fail immediately and skip remaining tests
-        if (gtTime > 0 && avgTime > gtTime * 2) {
-          results.passed = false;
-          results.errors.push(`${test.name}: Average execution time (${avgTime.toFixed(2)}ms) exceeds limit (${(gtTime * 2).toFixed(2)}ms)`);
-          results.failedTests.push(test);
-          console.log(`        ✗ Failed: Avg time ${avgTime.toFixed(2)}ms > limit ${(gtTime * 2).toFixed(2)}ms`);
-          console.log(`        Skipping remaining tests due to time limit failure.`);
-          break; // Stop testing remaining test cases
-        }
+        // Time-complexity limit (avg > GT * 2) disabled: only correctness is graded now.
 
         if (output !== undefined) {
           // Compare output (trim whitespace for comparison)
