@@ -4,7 +4,8 @@ Student Evaluation Main Script
 
 입력:
   - student_id: 학생 ID
-  - csv_path: 로그 CSV 파일 경로
+  - csv_paths: 같은 학생·과제의 MainTable CSV 경로 리스트
+  - current_submission: 이번 채점 결과 이벤트명 (예: X-Submission.WrongAnswer)
   - kcs: 제출 코드에서 추출된 KC 리스트
   - success: 제출 성공 여부
   - current_mastery: 현재 KC별 P(mastery) (선택)
@@ -28,22 +29,24 @@ import struggling_score
 
 def evaluate_student(
     student_id,
-    csv_path,
+    csv_paths,
     kcs,
     success,
     current_mastery=None,
-    level=None
+    level=None,
+    current_submission=None
 ):
     """
     학생 평가 수행
 
     Args:
         student_id: 학생 ID
-        csv_path: MainTable CSV 파일 경로
+        csv_paths: 같은 학생·과제의 MainTable CSV 경로 리스트
         kcs: 제출 코드에서 추출된 KC 리스트
         success: 제출 성공 여부 (True/False)
         current_mastery: 현재 KC별 P(mastery) 딕셔너리 (선택)
         level: 문제 난이도 (1 or 3, 선택)
+        current_submission: 이번 채점 결과 이벤트명 (로그에 아직 없음)
 
     Returns:
         dict: BKT 결과 + Struggling Score 결과
@@ -74,10 +77,13 @@ def evaluate_student(
         'summary': mastery_summary
     }
 
-    # 2. Struggling Score 계산 (CSV 파일이 있는 경우)
-    if csv_path and os.path.exists(csv_path):
+    # 2. Struggling Score 계산 (직전 제출 이후 구간, CSV 파일이 있는 경우)
+    csv_paths = [p for p in (csv_paths or []) if os.path.exists(p)]
+    if csv_paths:
         try:
-            struggling_result = struggling_score.analyze_csv(csv_path, level)
+            struggling_result = struggling_score.analyze_submission(
+                csv_paths, current_submission, level
+            )
             result['struggling_result'] = struggling_result
 
             # BKT weight와 Struggling Score ratio 결합
@@ -142,20 +148,22 @@ def main():
 
     # 입력 파라미터 추출
     student_id = input_data.get('student_id')
-    csv_path = input_data.get('csv_path')
+    csv_paths = input_data.get('csv_paths', [])
     kcs = input_data.get('kcs', [])
     success = input_data.get('success', False)
     current_mastery = input_data.get('current_mastery')
     level = input_data.get('level')
+    current_submission = input_data.get('current_submission')
 
     # 평가 수행
     result = evaluate_student(
         student_id=student_id,
-        csv_path=csv_path,
+        csv_paths=csv_paths,
         kcs=kcs,
         success=success,
         current_mastery=current_mastery,
-        level=level
+        level=level,
+        current_submission=current_submission
     )
 
     # JSON 출력

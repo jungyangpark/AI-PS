@@ -166,49 +166,45 @@ function extractLevelFromAssignmentId(assignmentId: string): number | undefined 
 }
 
 /**
- * Helper: Find latest MainTable CSV for student session
+ * Helper: Map an evaluation result to the X-Submission event the client logs for it
+ * (mirrors code-process-logger/src/extension.ts)
  */
-async function findLatestMainTableCSV(
+function toSubmissionEvent(success: boolean, reason?: string): string {
+  if (success) return 'X-Submission.Success';
+  switch (reason) {
+    case 'Syntax Error': return 'X-Submission.SyntaxError';
+    case 'Runtime Error': return 'X-Submission.RuntimeError';
+    case 'Time Limit Exceeded': return 'X-Submission.TimeLimitExceeded';
+    case 'Wrong Algorithm': return 'X-Submission.WrongAlgorithm';
+    default: return 'X-Submission.WrongAnswer';
+  }
+}
+
+/**
+ * Helper: Find every MainTable CSV for this student and assignment, oldest first.
+ * Restarting an assignment starts a new file, so the events since the previous
+ * submission can span several of them.
+ */
+async function findMainTableCSVs(
   studentId: string,
   assignmentId: string
-): Promise<string | undefined> {
+): Promise<string[]> {
+  // Same layout routes/logs.ts writes: {LOG_DIR}/{studentId}/{assignmentId}/MainTable_{sessionId}.csv
+  const logBasePath = process.env.LOG_DIR || path.join(process.cwd(), 'logs');
+  const dirPath = path.join(logBasePath, studentId, assignmentId);
+
   try {
-    // Extract level from assignmentId
-    const level = extractLevelFromAssignmentId(assignmentId);
-    if (!level) return undefined;
+    const files = await fs.readdir(dirPath);
+    const csvPaths = files
+      .filter(f => f.startsWith('MainTable') && f.endsWith('.csv'))
+      .sort() // sessionId ends with an ISO timestamp, so name order = time order
+      .map(f => path.join(dirPath, f));
 
-    // Try common log patterns
-    const logBasePath = path.join(process.cwd(), 'logs');
-    const possiblePaths = [
-      path.join(logBasePath, assignmentId, studentId),
-      path.join(logBasePath, `test_lv${level}`, studentId),
-      path.join(logBasePath, studentId)
-    ];
-
-    for (const dirPath of possiblePaths) {
-      try {
-        const files = await fs.readdir(dirPath);
-        const mainTableFiles = files
-          .filter(f => f.startsWith('MainTable') && f.endsWith('.csv'))
-          .sort()
-          .reverse(); // Most recent first
-
-        if (mainTableFiles.length > 0) {
-          const csvPath = path.join(dirPath, mainTableFiles[0]);
-          console.log(`   Found MainTable CSV: ${csvPath}`);
-          return csvPath;
-        }
-      } catch (err) {
-        // Directory doesn't exist, try next path
-        continue;
-      }
-    }
-
-    console.log(`   No MainTable CSV found for ${studentId}/${assignmentId}`);
-    return undefined;
+    console.log(`   Found ${csvPaths.length} MainTable CSV(s) in ${dirPath}`);
+    return csvPaths;
   } catch (error) {
-    console.error(`Error finding MainTable CSV:`, error);
-    return undefined;
+    console.log(`   No MainTable CSV found for ${studentId}/${assignmentId}`);
+    return [];
   }
 }
 
@@ -268,8 +264,8 @@ router.post('/', async (req: Request, res: Response) => {
       // Step 3: Update student model
       console.log(`👤 Updating student model...`);
 
-      // Find latest MainTable CSV for this student session
-      const csvPath = await findLatestMainTableCSV(studentId, assignmentId);
+      // MainTable CSVs for this student and assignment (scored from the previous submission on)
+      const csvPaths = await findMainTableCSVs(studentId, assignmentId);
 
       // Extract level from assignmentId (e.g., "test_lv3" -> 3)
       const level = extractLevelFromAssignmentId(assignmentId);
@@ -283,8 +279,9 @@ router.post('/', async (req: Request, res: Response) => {
         studentId,
         detectedKCs,
         true,
-        csvPath,
-        level
+        csvPaths,
+        level,
+        toSubmissionEvent(true)
       );
 
       console.log(`   Total submissions: ${studentModel.totalSubmissions}`);
@@ -300,15 +297,16 @@ router.post('/', async (req: Request, res: Response) => {
       console.log(`❌ Code evaluation failed: ${evaluation.reason}`);
 
       // Update student model with failed attempt
-      const csvPath = await findLatestMainTableCSV(studentId, assignmentId);
+      const csvPaths = await findMainTableCSVs(studentId, assignmentId);
       const level = extractLevelFromAssignmentId(assignmentId);
 
       studentModel = updateStudentModel(
         studentId,
         assignmentConfig.kcs,
         false,
-        csvPath,
-        level
+        csvPaths,
+        level,
+        toSubmissionEvent(false, evaluation.reason)
       );
 
       // Update students.json with BKT-based KC levels (even on failure, with struggling penalty)

@@ -173,7 +173,10 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
   writer = new ProgSnap2Writer(
     tempDir,
     (event) => { if (logUploader) { logUploader.addEvent(event); } },
-    (codeStateId, fileName, content) => { if (logUploader) { logUploader.uploadCodeState(codeStateId, fileName, content); } },
+    // No assignment ('-') → no snapshot upload, same as the events (see LogUploader.flush)
+    (codeStateId, fileName, content) => {
+      if (logUploader && currentAssignmentId !== '-') { logUploader.uploadCodeState(codeStateId, fileName, content); }
+    },
   );
 
   // Initialize LLM completion provider with student's level
@@ -329,6 +332,16 @@ async function submitCode(): Promise<void> {
     async (progress) => {
       try {
         progress.report({ message: "Checking syntax and running tests..." });
+
+        // The server scores struggling from the log events since the previous submission,
+        // so everything up to this moment must reach it before /api/submit - including
+        // edits still grouped in the tracker and the previous submission's result event.
+        if (editTracker) {
+          editTracker.flushPendingEdits();
+        }
+        if (logUploader) {
+          await logUploader.flush();
+        }
 
         const response = await serverRequest(serverUrl, '/api/submit', {
           studentId: currentSubjectId,

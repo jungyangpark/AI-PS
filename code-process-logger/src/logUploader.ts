@@ -38,8 +38,12 @@ export class LogUploader {
   async flush(): Promise<void> {
     if (this.buffer.length === 0) { return; }
 
-    const events = [...this.buffer];
+    // Events logged with no assignment ('-', e.g. after a successful submission) are not
+    // stored by the server; dropping them here keeps them out of the previous assignment's
+    // MainTable, which this uploader still targets until a new assignment is set.
+    const events = this.buffer.filter(e => e.AssignmentID !== '-');
     this.buffer = [];
+    if (events.length === 0) { return; }
 
     try {
       await this.sendToServer('/api/logs', {

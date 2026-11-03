@@ -38,7 +38,6 @@ export class EditTracker implements vscode.Disposable {
   private autocompleteRecentlyUsed: boolean = false;
   private autocompleteRecentTimer: NodeJS.Timeout | undefined;
   private autocompleteCallbacks: AutocompleteCallbacks | undefined;
-  private isTogglingAutocomplete: boolean = false;
 
   // Files to ignore for edit tracking (e.g., settings files changed by our extension)
   private static readonly IGNORED_PATHS = [
@@ -140,9 +139,6 @@ export class EditTracker implements vscode.Disposable {
     if (!this.isActive) { return; }
     if (event.document.uri.scheme !== 'file') { return; }
 
-    // Ignore changes triggered by our own autocomplete toggling
-    if (this.isTogglingAutocomplete) { return; }
-
     const relativePath = this.getRelativePath(event.document.uri);
 
     // Ignore settings.json changes (caused by our autocomplete toggle)
@@ -167,11 +163,14 @@ export class EditTracker implements vscode.Disposable {
       const line = change.range.start.line + 1;
       const col = change.range.start.character + 1;
 
-      // Check if this is just a newline + auto-indentation (e.g. "\n    ")
-      const isAutoIndent = change.text.startsWith('\n') && change.text.trim() === '';
+      // Whitespace-only inserts are typing, not pasting: a newline + auto-indentation
+      // ("\n    ") and a Tab press ("    ") both arrive as one multi-char change.
+      // They used to dominate the Paste events, so they stay normal File.Edit inserts.
+      const isWhitespaceOnly = change.text.trim() === '';
 
       // Detect multi-char insert (3+ chars in a single event = not normal typing)
-      const isMultiCharInsert = editType === 'Insert' && change.text.length >= 3 && !isAutoIndent;
+      const isMultiCharInsert =
+        editType === 'Insert' && change.text.length >= 3 && !isWhitespaceOnly;
 
       if (isMultiCharInsert) {
         // Flush any pending normal edits first
@@ -222,7 +221,7 @@ export class EditTracker implements vscode.Disposable {
 
   }
 
-  private flushPendingEdits(): void {
+  flushPendingEdits(): void {
     if (this.pendingEdits.length === 0) { return; }
 
     const edits = [...this.pendingEdits];
@@ -364,12 +363,10 @@ export class EditTracker implements vscode.Disposable {
     if (this.autocompleteCallbacks) {
       this.autocompleteEnabled = true;
 
-      this.isTogglingAutocomplete = true;
-      try {
-        await this.autocompleteCallbacks.enable();
-      } finally {
-        this.isTogglingAutocomplete = false;
-      }
+      // enable() waits for the server's completion (seconds). Student edits made while it
+      // runs must still be logged, so no change is ignored here: the ghost text does not
+      // touch the document, and settings.json writes are dropped by shouldIgnore().
+      await this.autocompleteCallbacks.enable();
 
       // Log AutocompleteOn event
       this.writer.writeEvent({

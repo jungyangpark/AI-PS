@@ -18,6 +18,17 @@ interface CodeBlock {
   level?: number;
 }
 
+/** Level 3 ghost text is displayed with this marker so the student knows Tab accepts it. */
+const TAB_PREFIX = '[tab] ';
+
+/**
+ * Remove the display-only "[tab] " marker so it can never reach the document.
+ * The marker is for the ghost text alone - inserting it produces a SyntaxError.
+ */
+function stripTabPrefix(text: string): string {
+  return text.replace(/\[tab\]\s?/g, '');
+}
+
 /**
  * InlineCompletionProvider-based completion - shows real ghost text
  */
@@ -115,20 +126,11 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     }
 
     // Calculate how much to show based on level and matched characters
-    let displayCompletion = this.cachedCompletion;
-
-    if (this.level === 1 || this.level === 3) {
-      // For Level 1 & 3: show remaining completion after matched chars
-      displayCompletion = this.cachedCompletion.substring(this.matchedChars);
-    }
-
-    // Remove leading newlines to prevent ghost text from appearing on multiple lines below cursor
-    // This happens when user presses Enter multiple times in blank lines
-    displayCompletion = displayCompletion.replace(/^\n+/, '');
+    let displayCompletion = this.getPendingCompletionText();
 
     // Level 3: Add [tab] prefix to ghost text
     if (this.level === 3 && displayCompletion.length > 0) {
-      displayCompletion = '[tab] ' + displayCompletion;
+      displayCompletion = TAB_PREFIX + displayCompletion;
     }
 
     if (displayCompletion.length > 0) {
@@ -708,6 +710,26 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     return this.matchedChars;
   }
 
+  /**
+   * The completion text still owed to the student, without any display marker.
+   * This is what the ghost shows and what Tab inserts - the two must not diverge.
+   */
+  private getPendingCompletionText(): string {
+    let text = this.cachedCompletion;
+
+    if (this.level === 1 || this.level === 3) {
+      // For Level 1 & 3: only what remains after the chars the student already typed
+      text = this.cachedCompletion.substring(this.matchedChars);
+    }
+
+    // Remove leading newlines to prevent ghost text from appearing on multiple lines below cursor
+    // This happens when user presses Enter multiple times in blank lines
+    text = text.replace(/^\n+/, '');
+
+    // Guard against a marker arriving from the server or a stale cache
+    return stripTabPrefix(text);
+  }
+
   async clearGhost(clearCache: boolean = false): Promise<void> {
     this.cachedCompletion = '';
     this.cachedPosition = undefined;
@@ -777,34 +799,42 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
         wasQuestionMode
       });
 
-      // Level 3: Save line number before commit
-      const lineNumber = editor.selection.active.line;
-      console.log(`🔵 [TAB] Line before commit: ${lineNumber}`);
+      // Level 3: Save line number before insert
+      const insertPosition = editor.selection.active;
+      const lineNumber = insertPosition.line;
+      console.log(`🔵 [TAB] Line before insert: ${lineNumber}`);
+
+      // Insert the completion ourselves, without the display-only "[tab] " marker.
+      // Committing the inline suggestion would insert the marker too, and removing it
+      // afterwards failed whenever the line had shifted - the marker then stayed in the
+      // student's code and broke it.
+      const insertText = stripTabPrefix(this.getPendingCompletionText());
+
+      if (insertText.length === 0) {
+        console.log(`🔵 [TAB] Nothing left to insert, falling back to tab character`);
+        await this.clearGhost();
+        await vscode.commands.executeCommand('tab');
+        return;
+      }
 
       // Set flag to ignore onChange events during Tab accept
       this.isAcceptingCompletion = true;
 
-      // Accept the inline suggestion (includes "[tab] " prefix)
-      console.log(`🔵 [TAB] Committing inline suggestion...`);
-      await vscode.commands.executeCommand('editor.action.inlineSuggest.commit');
+      console.log(`🔵 [TAB] Inserting "${insertText.substring(0, 50)}"`);
+      await vscode.commands.executeCommand('editor.action.inlineSuggest.hide');
+      await editor.edit(editBuilder => {
+        editBuilder.insert(insertPosition, insertText);
+      }, { undoStopBefore: true, undoStopAfter: false });
 
-      // Level 3: Remove "[tab] " prefix from the committed line
-      const currentLine = editor.document.lineAt(lineNumber);
-      const lineText = currentLine.text;
-      const tabPrefixIndex = lineText.indexOf('[tab] ');
-
-      if (tabPrefixIndex !== -1) {
-        await editor.edit(editBuilder => {
-          const prefixRange = new vscode.Range(
-            new vscode.Position(lineNumber, tabPrefixIndex),
-            new vscode.Position(lineNumber, tabPrefixIndex + '[tab] '.length)
+      // Put the caret where the commit command would have left it: after the inserted text
+      const insertedLines = insertText.split('\n');
+      const endPosition = insertedLines.length === 1
+        ? insertPosition.translate(0, insertText.length)
+        : new vscode.Position(
+            insertPosition.line + insertedLines.length - 1,
+            insertedLines[insertedLines.length - 1].length
           );
-          editBuilder.delete(prefixRange);
-        }, { undoStopBefore: false, undoStopAfter: false });
-        console.log(`🔵 [TAB] Prefix removed from line ${lineNumber}, index ${tabPrefixIndex}`);
-      } else {
-        console.log(`🔵 [TAB] Warning: [tab] prefix not found in line text: "${lineText}"`);
-      }
+      editor.selection = new vscode.Selection(endPosition, endPosition);
 
       // Reset flag after edits are done
       this.isAcceptingCompletion = false;

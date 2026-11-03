@@ -44,6 +44,14 @@ FEATURE_SET = ['idle_ratio', 'delete_ratio', 'ac_accept_rate',
 def parse_ts(ts_str):
     return datetime.fromisoformat(str(ts_str).replace('Z', '+00:00'))
 
+def time_and_idle(timestamps):
+    """정렬된 타임스탬프 → (첫~끝 경과 초, IDLE_THRESHOLD 이상 간격의 합)"""
+    if len(timestamps) < 2:
+        return 0.0, 0.0
+    gaps = [(b - a).total_seconds() for a, b in zip(timestamps, timestamps[1:])]
+    span = (timestamps[-1] - timestamps[0]).total_seconds()
+    return span, sum(g for g in gaps if g >= IDLE_THRESHOLD)
+
 def is_tab_paste(insert_text):
     if pd.isna(insert_text):
         return True
@@ -96,16 +104,9 @@ def extract_features(df, level=None):
     df['ts'] = df['Timestamp'].apply(parse_ts)
     df = df.sort_values('ts').reset_index(drop=True)
 
-    total_seconds = max(
-        (df['ts'].iloc[-1] - df['ts'].iloc[0]).total_seconds(), 1
-    )
-
     # idle_ratio
-    idle_seconds = sum(
-        (df['ts'].iloc[i] - df['ts'].iloc[i-1]).total_seconds()
-        for i in range(1, len(df))
-        if (df['ts'].iloc[i] - df['ts'].iloc[i-1]).total_seconds() >= IDLE_THRESHOLD
-    )
+    span, idle_seconds = time_and_idle(df['ts'].tolist())
+    total_seconds = max(span, 1)
     idle_ratio = idle_seconds / total_seconds
 
     # 편집 이벤트
@@ -201,22 +202,80 @@ def compute_struggling_score(features, thresholds=None):
     }
 
 
-def analyze_csv(csv_path, level=None):
+def analyze_submission(csv_paths, current_submission, level=None):
     """
-    CSV 파일을 분석하여 Struggling Score 계산
+    이번 제출 한 건에 대한 Struggling Score 계산 (BKT와 같은 제출 단위)
+
+    구간 = 직전 X-Submission.* 이벤트 이후 ~ 지금.
+    과제를 다시 시작해 MainTable이 여러 개로 나뉘어도 같은 구간에 들어오며,
+    파일 사이의 공백(VSCode를 껐다 켠 시간)은 idle로 세지 않는다.
+
+    제출 피처(wrong_answer_rate, runtime_error_rate, eq)는
+    [직전 제출 결과, 이번 제출 결과]로 계산한다. 이번 결과는 채점 직후라
+    아직 로그에 없으므로 서버가 current_submission으로 넘겨준다.
 
     Args:
-        csv_path: CSV 파일 경로
+        csv_paths: 같은 학생·과제의 MainTable CSV 경로 리스트
+        current_submission: 이번 채점 결과 이벤트명 (예: 'X-Submission.WrongAnswer')
         level: 문제 난이도 (1 or 3)
 
     Returns:
-        dict: features와 struggling_score 결과
+        dict: features, struggling_score, window(구간 정보)
     """
-    df = pd.read_csv(csv_path)
-    features = extract_features(df, level)
+    frames = []
+    for i, p in enumerate(csv_paths):
+        part = pd.read_csv(p)
+        part['_file'] = i
+        frames.append(part)
+    df = pd.concat(frames, ignore_index=True)
+    df['ts'] = df['Timestamp'].apply(parse_ts)
+    df = df.sort_values(['ts', 'EventID']).reset_index(drop=True)
+
+    is_sub = df['EventType'].str.startswith('X-Submission.', na=False)
+    prev_subs = df[is_sub]
+    if len(prev_subs) > 0:
+        last_idx = prev_subs.index[-1]
+        prev_submission = df.loc[last_idx, 'EventType']
+        window = df.loc[last_idx + 1:]
+    else:
+        prev_submission = None
+        window = df
+
+    features = extract_features(window.drop(columns=['ts']), level)
+
+    # 파일별로 시간·idle을 계산해 더한다 → 파일 사이 공백 제외
+    total_seconds = 0.0
+    idle_seconds = 0.0
+    for _, part in window.groupby('_file'):
+        span, idle = time_and_idle(part['ts'].tolist())
+        total_seconds += span
+        idle_seconds += idle
+    features['total_seconds'] = total_seconds
+    features['idle_seconds'] = idle_seconds
+    features['idle_ratio'] = idle_seconds / max(total_seconds, 1)
+
+    # 제출 피처: [직전 결과, 이번 결과]
+    sub_events = ([prev_submission] if prev_submission else []) + \
+                 ([current_submission] if current_submission else [])
+    total_sub = max(len(sub_events), 1)
+    features['total_sub'] = total_sub
+    features['wrong_answer_count'] = sum(e in WRONG_ANSWER_EVENTS for e in sub_events)
+    features['wrong_algo_count'] = sum(e in WRONG_ALGO_EVENTS for e in sub_events)
+    features['runtime_error_count'] = sum(e in RUNTIME_ERROR_EVENTS for e in sub_events)
+    features['success_count'] = sum(e in SUCCESS_EVENTS for e in sub_events)
+    features['wrong_answer_rate'] = features['wrong_answer_count'] / total_sub
+    features['runtime_error_rate'] = features['runtime_error_count'] / total_sub
+    features['eq'] = compute_eq_from_submissions(sub_events)
+
     score_result = compute_struggling_score(features)
 
     return {
         'features': features,
-        'struggling_score': score_result
+        'struggling_score': score_result,
+        'window': {
+            'files': len(csv_paths),
+            'events': len(window),
+            'prev_submission': prev_submission,
+            'current_submission': current_submission,
+        }
     }

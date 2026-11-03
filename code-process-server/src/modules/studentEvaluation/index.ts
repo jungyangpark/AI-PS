@@ -59,11 +59,12 @@ function ensureStudentDataDir(): void {
  */
 interface PythonEvaluationInput {
   student_id: string;
-  csv_path?: string;
+  csv_paths?: string[];
   kcs: string[];
   success: boolean;
   current_mastery?: BKTMastery;
   level?: number;
+  current_submission?: string;
 }
 
 interface PythonEvaluationResult {
@@ -169,15 +170,17 @@ export function saveStudentModel(model: StudentModel): boolean {
  * @param studentId - Student identifier
  * @param kcs - Knowledge Components demonstrated in this submission
  * @param success - Whether the submission was successful
- * @param csvPath - Optional path to MainTable CSV for struggling score calculation
+ * @param csvPaths - MainTable CSVs for this student and assignment (struggling score uses the events since the previous submission)
  * @param level - Optional problem level (1 or 3)
+ * @param currentSubmission - This submission's result event, e.g. 'X-Submission.WrongAnswer' (not in the log yet)
  */
 export function updateStudentModel(
   studentId: string,
   kcs: string[],
   success: boolean,
-  csvPath?: string,
-  level?: number
+  csvPaths?: string[],
+  level?: number,
+  currentSubmission?: string
 ): StudentModel {
   const model = loadStudentModel(studentId);
 
@@ -200,11 +203,12 @@ export function updateStudentModel(
   // Run Python BKT evaluation
   const pythonInput: PythonEvaluationInput = {
     student_id: studentId,
-    csv_path: csvPath,
+    csv_paths: csvPaths,
     kcs,
     success,
     current_mastery: model.bktMastery,
-    level
+    level,
+    current_submission: currentSubmission
   };
 
   const pythonResult = runPythonEvaluation(pythonInput);
