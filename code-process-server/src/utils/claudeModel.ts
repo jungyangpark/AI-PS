@@ -15,7 +15,12 @@ export const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-opus-5-5';
 
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
-const isOpus55 = () => CLAUDE_MODEL.startsWith('claude-opus-5-5');
+// OpenRouter (or another Anthropic-compatible gateway): ANTHROPIC_BASE_URL is set and the model is
+// named like "anthropic/claude-opus-5.5". Anthropic-only extras (refusal fallback, beta header) are not sent.
+const isGateway = () => /openrouter\.ai/.test(process.env.ANTHROPIC_BASE_URL || '');
+
+// "anthropic/claude-opus-5.5" and "claude-opus-5-5" are the same model
+const isOpus55 = () => CLAUDE_MODEL.replace(/^anthropic\//, '').replace(/\./g, '-').startsWith('claude-opus-5-5');
 
 /**
  * Model + effort fields to spread into messages.create().
@@ -25,6 +30,9 @@ const isOpus55 = () => CLAUDE_MODEL.startsWith('claude-opus-5-5');
 export function modelParams(effort: Effort): { model: string } {
   if (!isOpus55()) {
     return { model: CLAUDE_MODEL };
+  }
+  if (isGateway()) {
+    return { model: CLAUDE_MODEL, output_config: { effort } } as { model: string };
   }
   return {
     model: CLAUDE_MODEL,
@@ -36,7 +44,7 @@ export function modelParams(effort: Effort): { model: string } {
 
 /** Request options: beta header for server-side refusal fallback on Opus 5.5. */
 export function requestOptions(): Anthropic.RequestOptions | undefined {
-  if (!isOpus55()) {
+  if (!isOpus55() || isGateway()) {
     return undefined;
   }
   return { headers: { 'anthropic-beta': 'server-side-fallback-2026-07-01' } };
