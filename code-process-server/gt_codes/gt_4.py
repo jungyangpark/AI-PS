@@ -1,17 +1,13 @@
-n = int(input())
+text = input()
+s = int(input())
+e = int(input())
 
-foods = []
-for i in range(n):
-    food = input()
-    foods.append(food)
+middle = text[s:e+1]
 
-foods_tuple = tuple(foods)
-print(foods_tuple)
+reversed_part = ""
+for ch in middle:
+    reversed_part = ch + reversed_part
 
-largest = foods_tuple[0]
+result = text[:s].lower() + reversed_part.upper() + text[e+1:].lower()
 
-for food in foods_tuple:
-    if food > largest:
-        largest = food
-
-print(largest)
+print(result)

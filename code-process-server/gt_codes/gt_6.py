@@ -1,17 +1,19 @@
 n = int(input())
 
-foods = {}
-
+strings = []
 for i in range(n):
-    name = input()
-    price = int(input())
-    foods[name] = price
+    strings.append(input())
 
+result = 0
 
-foods["lamb"] = 50
+for s in strings:
+    count = 0
 
-print(foods["fish"])
+    for t in strings:
+        if len(s) == len(t):
+            count += 1
 
-foods["fish"] = 100
+    if count > result:
+        result = count
 
-print(foods)
+print(result)
