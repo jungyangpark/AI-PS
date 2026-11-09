@@ -39,7 +39,11 @@ export interface StudentModel {
   lastCombinedScore?: CombinedScore;
 }
 
-const STUDENT_DATA_DIR = path.join(__dirname, '../../../student_data');
+// Student models (BKT mastery etc.). Set STUDENT_DATA_DIR to a persistent disk in production
+// (e.g. /var/data/student_data on Render) so models survive redeploys.
+const STUDENT_DATA_DIR = process.env.STUDENT_DATA_DIR
+  ? path.resolve(process.env.STUDENT_DATA_DIR)
+  : path.join(__dirname, '../../../student_data');
 const PYTHON_SCRIPT = path.join(__dirname, 'evaluate_student.py');
 
 // Test accounts that should not have their levels updated

@@ -278,6 +278,13 @@ import tracemalloc as __aips_tracemalloc
 # Increase recursion limit for large inputs
 __aips_sys.setrecursionlimit(1000000)
 
+# Prompts written by input("...") are not part of the graded output: read the line, drop the prompt
+import builtins as __aips_builtins
+__aips_real_input = __aips_builtins.input
+def __aips_input(prompt=''):
+    return __aips_real_input()
+__aips_builtins.input = __aips_input
+
 # Start memory tracking
 __aips_tracemalloc.start()
 __aips_start_time = __aips_time.perf_counter()
