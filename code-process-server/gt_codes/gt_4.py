@@ -1,13 +1,8 @@
-text = input()
-s = int(input())
-e = int(input())
+n = int(input())
 
-middle = text[s:e+1]
+factorial = 1
 
-reversed_part = ""
-for ch in middle:
-    reversed_part = ch + reversed_part
+for i in range(1, n + 1):
+    factorial = factorial * i
 
-result = text[:s].lower() + reversed_part.upper() + text[e+1:].lower()
-
-print(result)
+print(factorial)
