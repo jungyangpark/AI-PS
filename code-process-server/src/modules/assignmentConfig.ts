@@ -14,7 +14,7 @@ export interface AssignmentConfig {
   kcs: string[]; // Knowledge Components for this assignment
 }
 
-const ASSIGNMENTS_DIR = path.join(__dirname, '../../assignments');
+import { ASSIGNMENTS_DIR, isSafeId } from '../utils/paths';
 
 /**
  * Loads assignment configuration from JSON file
@@ -22,6 +22,7 @@ const ASSIGNMENTS_DIR = path.join(__dirname, '../../assignments');
  * @returns Assignment configuration or null if not found
  */
 export function loadAssignmentConfig(assignmentId: string): AssignmentConfig | null {
+  if (!isSafeId(assignmentId)) { return null; }
   try {
     // Exact match for assignment file
     const fileName = `${assignmentId}.json`;

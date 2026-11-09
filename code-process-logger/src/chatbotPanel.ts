@@ -4,23 +4,27 @@ import { ProgSnap2Writer, EventType } from './progsnap2';
 const http = require('http');
 const https = require('https');
 
+export interface ChatbotSession {
+    writer: ProgSnap2Writer;
+    subjectId: string;
+    assignmentId: string;
+}
+
 export class ChatbotPanel {
     public static currentPanel: ChatbotPanel | undefined;
     private readonly _panel: vscode.WebviewPanel;
     private readonly _extensionUri: vscode.Uri;
     private _disposables: vscode.Disposable[] = [];
     private _chatHistory: Array<{ role: 'user' | 'assistant', content: string }> = [];
-    private _writer: ProgSnap2Writer | undefined;
-    private _subjectId: string;
-    private _assignmentId: string;
+    // Read at the moment an event is written, so an assignment change or a new login while the
+    // panel is open never logs under the old student/assignment. undefined = no active session.
+    private _getSession: () => ChatbotSession | undefined;
     private _capturedCode: string;
     private _capturedFileName: string;
 
     public static createOrShow(
         extensionUri: vscode.Uri,
-        writer: ProgSnap2Writer | undefined,
-        subjectId: string,
-        assignmentId: string,
+        getSession: () => ChatbotSession | undefined,
         capturedCode: string,
         capturedFileName: string
     ) {
@@ -30,9 +34,7 @@ export class ChatbotPanel {
         if (ChatbotPanel.currentPanel) {
             ChatbotPanel.currentPanel._panel.reveal(column);
             // Update context
-            ChatbotPanel.currentPanel._writer = writer;
-            ChatbotPanel.currentPanel._subjectId = subjectId;
-            ChatbotPanel.currentPanel._assignmentId = assignmentId;
+            ChatbotPanel.currentPanel._getSession = getSession;
             ChatbotPanel.currentPanel._capturedCode = capturedCode;
             ChatbotPanel.currentPanel._capturedFileName = capturedFileName;
             return;
@@ -50,23 +52,19 @@ export class ChatbotPanel {
             }
         );
 
-        ChatbotPanel.currentPanel = new ChatbotPanel(panel, extensionUri, writer, subjectId, assignmentId, capturedCode, capturedFileName);
+        ChatbotPanel.currentPanel = new ChatbotPanel(panel, extensionUri, getSession, capturedCode, capturedFileName);
     }
 
     private constructor(
         panel: vscode.WebviewPanel,
         extensionUri: vscode.Uri,
-        writer: ProgSnap2Writer | undefined,
-        subjectId: string,
-        assignmentId: string,
+        getSession: () => ChatbotSession | undefined,
         capturedCode: string,
         capturedFileName: string
     ) {
         this._panel = panel;
         this._extensionUri = extensionUri;
-        this._writer = writer;
-        this._subjectId = subjectId;
-        this._assignmentId = assignmentId;
+        this._getSession = getSession;
         this._capturedCode = capturedCode;
         this._capturedFileName = capturedFileName;
 
@@ -98,11 +96,12 @@ export class ChatbotPanel {
         this._chatHistory.push({ role: 'user', content: userMessage });
 
         // Log chatbot question to MainTable.csv
-        if (this._writer) {
-            this._writer.writeEvent({
+        const session = this._getSession();
+        if (session) {
+            session.writer.writeEvent({
                 EventType: EventType.ChatbotQuestion,
-                SubjectID: this._subjectId,
-                AssignmentID: this._assignmentId,
+                SubjectID: session.subjectId,
+                AssignmentID: session.assignmentId,
                 InsertText: userMessage.substring(0, 500), // Truncate to 500 chars
             });
         }
@@ -143,11 +142,12 @@ export class ChatbotPanel {
             this._chatHistory.push({ role: 'assistant', content: assistantMessage });
 
             // Log chatbot response to MainTable.csv
-            if (this._writer) {
-                this._writer.writeEvent({
+            const responseSession = this._getSession();
+            if (responseSession) {
+                responseSession.writer.writeEvent({
                     EventType: EventType.ChatbotResponse,
-                    SubjectID: this._subjectId,
-                    AssignmentID: this._assignmentId,
+                    SubjectID: responseSession.subjectId,
+                    AssignmentID: responseSession.assignmentId,
                     InsertText: assistantMessage.substring(0, 500), // Truncate to 500 chars
                 });
             }
@@ -239,10 +239,13 @@ export class ChatbotPanel {
     }
 
     private _getHtmlForWebview(webview: vscode.Webview) {
+        const nonce = Array.from({ length: 32 }, () =>
+            'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random() * 62)]).join('');
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI-PS Chatbot</title>
     <style>
@@ -385,7 +388,7 @@ export class ChatbotPanel {
         <button id="send-button">전송</button>
     </div>
 
-    <script>
+    <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
         const chatContainer = document.getElementById('chat-container');
         const messageInput = document.getElementById('message-input');
@@ -433,8 +436,15 @@ export class ChatbotPanel {
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message ' + role;
 
+            // Escape first so code like a<b or vector<int>, or HTML in a reply, shows as text
+            const escaped = String(content)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+
             // Simple markdown-like rendering for code blocks
-            const html = content
+            const html = escaped
                 .replace(/\`\`\`(\\w+)?\\n([\\s\\S]*?)\`\`\`/g, '<pre><code>$2</code></pre>')
                 .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
                 .replace(/\\n/g, '<br>');

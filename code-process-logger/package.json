@@ -50,7 +50,7 @@
       {
         "command": "codeProcessLogger.toggleAutocomplete",
         "key": "escape",
-        "when": "editorTextFocus && codeProcessLogger.sessionActive"
+        "when": "editorTextFocus && codeProcessLogger.sessionActive && codeProcessLogger.hasCompletion && !suggestWidgetVisible && !findWidgetVisible"
       }
     ],
     "configuration": {

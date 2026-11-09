@@ -46,3 +46,5 @@ opencode.jsonc
 # Added by code-review-graph
 .*
 graphify-out/
+
+exam-site/

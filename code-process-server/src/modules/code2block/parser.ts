@@ -1,21 +1,17 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
 import { ASTNode } from './types';
 
-const execAsync = promisify(exec);
+const PARSE_TIMEOUT_MS = 10000;
 
-/**
- * Parse Python code using Python's ast module
- * Returns a simplified AST structure
- */
-export async function parsePythonAST(code: string): Promise<ASTNode> {
-  // Python script to parse AST and output JSON
-  const pythonScript = `
+// Python script that parses the code it reads from stdin (JSON string) and prints the AST as JSON.
+// The student's code is never placed in a shell command or in Python source, so characters such as
+// $, backticks, quotes and backslashes reach ast.parse unchanged.
+const PYTHON_SCRIPT = `
 import ast
 import json
 import sys
 
-code = '''${code.replace(/'/g, "\\'")}'''
+code = json.loads(sys.stdin.read())
 
 try:
     tree = ast.parse(code)
@@ -48,8 +44,33 @@ except SyntaxError as e:
     print(json.dumps({'error': str(e), 'type': 'SyntaxError'}))
 `;
 
+function runParser(code: string): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('python3', ['-c', PYTHON_SCRIPT], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`AST parsing timed out after ${PARSE_TIMEOUT_MS} ms`));
+    }, PARSE_TIMEOUT_MS);
+
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    child.stdin.on('error', () => { /* child exited early; reported via close/error */ });
+    child.on('error', (err) => { clearTimeout(timer); reject(err); });
+    child.on('close', () => { clearTimeout(timer); resolve({ stdout, stderr }); });
+
+    child.stdin.end(JSON.stringify(code));
+  });
+}
+
+/**
+ * Parse Python code using Python's ast module
+ * Returns a simplified AST structure
+ */
+export async function parsePythonAST(code: string): Promise<ASTNode> {
   try {
-    const { stdout, stderr } = await execAsync(`python3 -c "${pythonScript.replace(/"/g, '\\"')}"`);
+    const { stdout, stderr } = await runParser(code);
 
     if (stderr) {
       console.error('Python AST parsing warning:', stderr);

@@ -7,11 +7,12 @@ import { convertBKTToKCLevels, ALL_KC_IDS } from '../modules/studentEvaluation/k
 import fs from 'fs/promises';
 import fssync from 'fs';
 import path from 'path';
+import { LOG_DIR, isSafeId } from '../utils/paths';
+import { requireAdmin } from '../utils/adminAuth';
 
 const router = Router();
 
-const DATA_DIR = process.env.LOG_DIR || './logs';
-const STUDENTS_FILE = path.join(DATA_DIR, 'students.json');
+const STUDENTS_FILE = path.join(LOG_DIR, 'students.json');
 
 interface SubmitRequest {
   studentId: string;
@@ -117,7 +118,7 @@ function logStudentLevelBeforeSubmission(
     const timestamp = new Date().toISOString();
 
     // Prepare CSV directory
-    const studentDir = path.join(process.cwd(), 'logs', studentId);
+    const studentDir = path.join(LOG_DIR, studentId);
     if (!fssync.existsSync(studentDir)) {
       fssync.mkdirSync(studentDir, { recursive: true });
     }
@@ -190,8 +191,7 @@ async function findMainTableCSVs(
   assignmentId: string
 ): Promise<string[]> {
   // Same layout routes/logs.ts writes: {LOG_DIR}/{studentId}/{assignmentId}/MainTable_{sessionId}.csv
-  const logBasePath = process.env.LOG_DIR || path.join(process.cwd(), 'logs');
-  const dirPath = path.join(logBasePath, studentId, assignmentId);
+  const dirPath = path.join(LOG_DIR, studentId, assignmentId);
 
   try {
     const files = await fs.readdir(dirPath);
@@ -216,10 +216,25 @@ router.post('/', async (req: Request, res: Response) => {
   try {
     const { studentId, assignmentId, sessionId, code, fileName }: SubmitRequest = req.body;
 
-    if (!studentId || !assignmentId || !code) {
+    if (!studentId || !assignmentId || !code || typeof code !== 'string') {
       return res.status(400).json({
         error: 'Missing required fields: studentId, assignmentId, code'
       });
+    }
+
+    // IDs become file paths below (logs, submissions, assignment config), so they must be plain IDs.
+    if (!isSafeId(studentId) || !isSafeId(assignmentId) || (sessionId !== undefined && !isSafeId(sessionId))) {
+      return res.status(400).json({ error: 'Invalid studentId, assignmentId or sessionId' });
+    }
+
+    // Only registered students can submit (prevents changing models / writing files for made-up IDs).
+    try {
+      const registered = JSON.parse(fssync.readFileSync(STUDENTS_FILE, 'utf-8'));
+      if (!Object.prototype.hasOwnProperty.call(registered, studentId)) {
+        return res.status(403).json({ error: 'Unknown student. Please log in again.' });
+      }
+    } catch {
+      return res.status(403).json({ error: 'Unknown student. Please log in again.' });
     }
 
     console.log(`📝 Submission from ${studentId} for ${assignmentId}`);
@@ -351,12 +366,7 @@ router.post('/', async (req: Request, res: Response) => {
     };
 
     // Save to file system
-    const submissionsDir = path.join(
-      process.cwd(),
-      'logs',
-      studentId,
-      'submissions'
-    );
+    const submissionsDir = path.join(LOG_DIR, studentId, 'submissions');
 
     await fs.mkdir(submissionsDir, { recursive: true });
 
@@ -415,16 +425,14 @@ router.post('/', async (req: Request, res: Response) => {
  * GET /api/submit/:studentId/:assignmentId
  * Get submission history for a student's assignment
  */
-router.get('/:studentId/:assignmentId', async (req: Request, res: Response) => {
+router.get('/:studentId/:assignmentId', requireAdmin, async (req: Request, res: Response) => {
   try {
     const { studentId, assignmentId } = req.params;
+    if (!isSafeId(studentId) || !isSafeId(assignmentId)) {
+      return res.status(400).json({ error: 'Invalid id' });
+    }
 
-    const submissionsDir = path.join(
-      process.cwd(),
-      'logs',
-      studentId,
-      'submissions'
-    );
+    const submissionsDir = path.join(LOG_DIR, studentId, 'submissions');
 
     try {
       const files = await fs.readdir(submissionsDir);

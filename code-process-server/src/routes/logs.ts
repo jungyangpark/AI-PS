@@ -1,13 +1,13 @@
 import { Router, Request, Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
+import { LOG_DIR, isSafeId, safeJoin } from '../utils/paths';
+import { requireAdmin } from '../utils/adminAuth';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { ZipArchive } = require('archiver');
 
 export const logsRouter = Router();
-
-const LOG_DIR = process.env.LOG_DIR || './logs';
 
 // Ensure log directory exists
 fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -27,12 +27,19 @@ interface LogBatchRequest {
   events: LogEvent[];
 }
 
+const CSV_HEADERS = [
+  'EventType', 'EventID', 'Order', 'SubjectID', 'AssignmentID',
+  'Timestamp', 'EditType', 'InsertText', 'DeleteText',
+  'SourceLocation', 'CodeStateID', 'CursorLine', 'CursorColumn',
+  'X-PauseDuration', 'X-PauseReason', 'X-EditCount',
+];
+
 // Receive a batch of log events
 logsRouter.post('/', (req: Request, res: Response) => {
   const { subjectId, assignmentId, sessionId, events } = req.body as LogBatchRequest;
 
-  if (!subjectId || !assignmentId || !events || events.length === 0) {
-    res.status(400).json({ error: 'Missing required fields: subjectId, assignmentId, events' });
+  if (!subjectId || !assignmentId || !sessionId || !Array.isArray(events) || events.length === 0) {
+    res.status(400).json({ error: 'Missing required fields: subjectId, assignmentId, sessionId, events[]' });
     return;
   }
 
@@ -48,9 +55,14 @@ logsRouter.post('/', (req: Request, res: Response) => {
     return;
   }
 
+  if (!isSafeId(subjectId) || !isSafeId(assignmentId) || !isSafeId(sessionId)) {
+    res.status(400).json({ error: 'Invalid subjectId, assignmentId or sessionId' });
+    return;
+  }
+
   try {
     // Create directory structure: logs/{subjectId}/{assignmentId}/
-    const assignmentDir = path.join(LOG_DIR, subjectId, assignmentId);
+    const assignmentDir = safeJoin(LOG_DIR, subjectId, assignmentId);
     fs.mkdirSync(assignmentDir, { recursive: true });
 
     // Use sessionId in filename: MainTable_{sessionId}.csv
@@ -58,32 +70,29 @@ logsRouter.post('/', (req: Request, res: Response) => {
 
     // Write header if new file
     if (!fs.existsSync(csvPath)) {
-      const headers = [
-        'EventType', 'EventID', 'Order', 'SubjectID', 'AssignmentID',
-        'Timestamp', 'EditType', 'InsertText', 'DeleteText',
-        'SourceLocation', 'CodeStateID', 'CursorLine', 'CursorColumn',
-        'X-PauseDuration', 'X-PauseReason', 'X-EditCount',
-      ];
-      fs.writeFileSync(csvPath, headers.join(',') + '\n', 'utf-8');
+      fs.writeFileSync(csvPath, CSV_HEADERS.join(',') + '\n', 'utf-8');
     }
 
-    // Append events
+    // Append events (one write per batch so rows of concurrent batches never interleave)
+    const rows: string[] = [];
     for (const event of events) {
-      const row = [
+      if (!event || typeof event !== 'object') { continue; }
+      rows.push([
         event.EventType, event.EventID, event.Order,
         event.SubjectID, event.AssignmentID, event.Timestamp,
         event.EditType, event.InsertText, event.DeleteText,
         event.SourceLocation, event.CodeStateID, event.CursorLine,
         event.CursorColumn, event['X-PauseDuration'], event['X-PauseReason'],
         event['X-EditCount'],
-      ].map(v => escapeCSV(v)).join(',');
-
-      fs.appendFileSync(csvPath, row + '\n', 'utf-8');
+      ].map(v => escapeCSV(v)).join(','));
+    }
+    if (rows.length > 0) {
+      fs.appendFileSync(csvPath, rows.join('\n') + '\n', 'utf-8');
     }
 
     res.json({
       status: 'ok',
-      eventsReceived: events.length,
+      eventsReceived: rows.length,
       sessionId,
     });
   } catch (error: any) {
@@ -96,7 +105,7 @@ logsRouter.post('/', (req: Request, res: Response) => {
 logsRouter.post('/codestate', (req: Request, res: Response) => {
   const { subjectId, assignmentId, codeStateId, fileName, content } = req.body;
 
-  if (!subjectId || !assignmentId || !codeStateId || !fileName) {
+  if (!subjectId || !assignmentId || !codeStateId || !fileName || typeof fileName !== 'string') {
     res.status(400).json({ error: 'Missing required fields' });
     return;
   }
@@ -108,27 +117,82 @@ logsRouter.post('/codestate', (req: Request, res: Response) => {
     return;
   }
 
-  try {
-    const stateDir = path.join(LOG_DIR, subjectId, assignmentId, 'CodeStates', codeStateId);
-    fs.mkdirSync(stateDir, { recursive: true });
+  if (!isSafeId(subjectId) || !isSafeId(assignmentId) || !isSafeId(codeStateId)) {
+    res.status(400).json({ error: 'Invalid subjectId, assignmentId or codeStateId' });
+    return;
+  }
 
-    const targetPath = path.join(stateDir, fileName);
+  try {
+    const stateDir = safeJoin(LOG_DIR, subjectId, assignmentId, 'CodeStates', codeStateId);
+    // fileName is the workspace-relative path of the student's file; it may contain
+    // sub-folders but must stay inside this code state folder.
+    // Files outside the workspace arrive as absolute paths; store them under the
+    // state folder as before (strip drive letter and leading slashes).
+    const relName = fileName.replace(/^[A-Za-z]:/, '').replace(/^[\\/]+/, '');
+    const targetPath = safeJoin(stateDir, relName);
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, content, 'utf-8');
+    fs.writeFileSync(targetPath, typeof content === 'string' ? content : '', 'utf-8');
 
     res.json({ status: 'ok', codeStateId });
   } catch (error: any) {
     console.error('Code state save error:', error.message);
-    res.status(500).json({ error: 'Failed to save code state' });
+    const status = /escapes/.test(error.message) ? 400 : 500;
+    res.status(status).json({ error: status === 400 ? 'Invalid fileName' : 'Failed to save code state' });
   }
 });
 
-// List all assignments for a subject
-logsRouter.get('/assignments/:subjectId', (req: Request, res: Response) => {
-  const { subjectId } = req.params;
-  const subjectDir = path.join(LOG_DIR, subjectId);
+// ---------------------------------------------------------------------------
+// Researcher endpoints (admin only)
+// ---------------------------------------------------------------------------
 
-  if (!fs.existsSync(subjectDir)) {
+/** Resolve LOG_DIR/<ids...> as an existing directory, or send an error and return null. */
+function resolveDir(res: Response, ...ids: string[]): string | null {
+  if (!ids.every(isSafeId)) {
+    res.status(400).json({ error: 'Invalid id' });
+    return null;
+  }
+  const dir = safeJoin(LOG_DIR, ...ids);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    res.status(404).json({ error: 'Not found' });
+    return null;
+  }
+  return dir;
+}
+
+function sendZip(res: Response, dir: string, filename: string, prefix: string | false): void {
+  const archive = new ZipArchive({ zlib: { level: 9 } });
+
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+  // Never throw from here: an exception inside an event handler would crash the server.
+  archive.on('error', (err: Error) => {
+    console.error('[Download] Archive error:', err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to build archive' });
+    } else {
+      res.destroy(err);
+    }
+  });
+  archive.on('warning', (err: Error) => {
+    console.warn('[Download] Archive warning:', err.message);
+  });
+
+  archive.pipe(res);
+  archive.directory(dir, prefix);
+  archive.finalize();
+}
+
+// List all assignments for a subject
+logsRouter.get('/assignments/:subjectId', requireAdmin, (req: Request, res: Response) => {
+  const { subjectId } = req.params;
+  if (!isSafeId(subjectId)) {
+    res.status(400).json({ error: 'Invalid id' });
+    return;
+  }
+  const subjectDir = safeJoin(LOG_DIR, subjectId);
+
+  if (!fs.existsSync(subjectDir) || !fs.statSync(subjectDir).isDirectory()) {
     res.json({ assignments: [] });
     return;
   }
@@ -141,120 +205,29 @@ logsRouter.get('/assignments/:subjectId', (req: Request, res: Response) => {
 });
 
 // Download entire assignment as ZIP
-logsRouter.get('/download/:subjectId/:assignmentId', (req: Request, res: Response) => {
+logsRouter.get('/download/:subjectId/:assignmentId', requireAdmin, (req: Request, res: Response) => {
   const { subjectId, assignmentId } = req.params;
-  const assignmentDir = path.join(LOG_DIR, subjectId, assignmentId);
-
-  console.log(`[Download] Request for ${subjectId}/${assignmentId}`);
-  console.log(`[Download] Looking in: ${assignmentDir}`);
-
-  if (!fs.existsSync(assignmentDir)) {
-    console.error(`[Download] Directory not found: ${assignmentDir}`);
-    res.status(404).json({ error: 'Assignment not found' });
-    return;
-  }
-
-  try {
-    const archive = new ZipArchive({
-      zlib: { level: 9 } // Maximum compression
-    });
-
-    // Set response headers BEFORE piping
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${subjectId}_${assignmentId}.zip"`);
-
-    // Handle errors - must be set before pipe
-    archive.on('error', (err: Error) => {
-      console.error('[Download] Archive error:', err);
-      throw err; // Let catch block handle it
-    });
-
-    // Log archive events
-    archive.on('warning', (err: Error) => {
-      console.warn('[Download] Archive warning:', err);
-    });
-
-    archive.on('finish', () => {
-      console.log(`[Download] Archive finished for ${subjectId}/${assignmentId}`);
-    });
-
-    // Pipe archive to response
-    archive.pipe(res);
-
-    // Add assignment directory to archive
-    console.log(`[Download] Adding directory to archive: ${assignmentDir}`);
-    archive.directory(assignmentDir, false);
-
-    // Finalize archive
-    archive.finalize();
-
-  } catch (error: any) {
-    console.error('[Download] Error:', error.message, error.stack);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Failed to download assignment logs', details: error.message });
-    }
-  }
+  const dir = resolveDir(res, subjectId, assignmentId);
+  if (!dir) { return; }
+  console.log(`[Download] ${subjectId}/${assignmentId}`);
+  sendZip(res, dir, `${subjectId}_${assignmentId}.zip`, false);
 });
 
 // Download all logs for a subject (all assignments)
-logsRouter.get('/download/:subjectId', (req: Request, res: Response) => {
+logsRouter.get('/download/:subjectId', requireAdmin, (req: Request, res: Response) => {
   const { subjectId } = req.params;
-  const subjectDir = path.join(LOG_DIR, subjectId);
-
-  console.log(`[Download] Request for all assignments of ${subjectId}`);
-  console.log(`[Download] Looking in: ${subjectDir}`);
-
-  if (!fs.existsSync(subjectDir)) {
-    console.error(`[Download] Directory not found: ${subjectDir}`);
-    res.status(404).json({ error: 'Subject not found' });
-    return;
-  }
-
-  try {
-    const archive = new ZipArchive({
-      zlib: { level: 9 }
-    });
-
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${subjectId}_all_assignments.zip"`);
-
-    archive.on('error', (err: Error) => {
-      console.error('[Download] Archive error:', err);
-      throw err;
-    });
-
-    archive.on('warning', (err: Error) => {
-      console.warn('[Download] Archive warning:', err);
-    });
-
-    archive.on('finish', () => {
-      console.log(`[Download] Archive finished for ${subjectId} (all assignments)`);
-    });
-
-    archive.pipe(res);
-    archive.directory(subjectDir, subjectId);
-    archive.finalize();
-
-  } catch (error: any) {
-    console.error('[Download] Error:', error.message, error.stack);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Failed to download subject logs', details: error.message });
-    }
-  }
+  const dir = resolveDir(res, subjectId);
+  if (!dir) { return; }
+  console.log(`[Download] ${subjectId} (all assignments)`);
+  sendZip(res, dir, `${subjectId}_all_assignments.zip`, subjectId);
 });
 
 // GET /api/logs/files/:subjectId/:assignmentId
 // List all files in an assignment directory (without downloading)
-logsRouter.get('/files/:subjectId/:assignmentId', (req: Request, res: Response) => {
+logsRouter.get('/files/:subjectId/:assignmentId', requireAdmin, (req: Request, res: Response) => {
   const { subjectId, assignmentId } = req.params;
-  const assignmentDir = path.join(LOG_DIR, subjectId, assignmentId);
-
-  console.log(`[Files] Request for ${subjectId}/${assignmentId}`);
-
-  if (!fs.existsSync(assignmentDir)) {
-    res.status(404).json({ error: 'Assignment not found' });
-    return;
-  }
+  const assignmentDir = resolveDir(res, subjectId, assignmentId);
+  if (!assignmentDir) { return; }
 
   try {
     const files: any[] = [];
@@ -269,10 +242,8 @@ logsRouter.get('/files/:subjectId/:assignmentId', (req: Request, res: Response) 
         const stats = fs.statSync(fullPath);
 
         if (stats.isDirectory()) {
-          // Recursively list directory contents
           listFiles(fullPath, itemRelativePath);
         } else {
-          // Add file info
           files.push({
             path: itemRelativePath,
             size: stats.size,
@@ -302,7 +273,7 @@ logsRouter.get('/files/:subjectId/:assignmentId', (req: Request, res: Response) 
 });
 
 // List all subjects
-logsRouter.get('/subjects', (req: Request, res: Response) => {
+logsRouter.get('/subjects', requireAdmin, (req: Request, res: Response) => {
   if (!fs.existsSync(LOG_DIR)) {
     res.json({ subjects: [] });
     return;

@@ -7,6 +7,7 @@ import { EditTracker } from './editTracker';
 import { LLMCompletionProvider } from './completionProvider';
 import { LogUploader } from './logUploader';
 import { ChatbotPanel } from './chatbotPanel';
+import { applySessionSettings, restoreSessionSettings, restorePendingSettings } from './settingsGuard';
 
 let writer: ProgSnap2Writer | undefined;
 let editTracker: EditTracker | undefined;
@@ -21,19 +22,23 @@ let currentSubjectId: string = '';
 let currentAssignmentId: string = '';
 let currentSessionId: string = '';
 
-// Store original settings to restore on session end
-let originalQuickSuggestions: any;
-let originalSuggestOnTriggerCharacters: boolean | undefined;
-let originalWordBasedSuggestions: string | undefined;
-let originalInlineSuggest: boolean | undefined;
-let originalAutoIndent: string | undefined;
-let originalInlineSuggestShowToolbar: string | undefined;
-let originalFormatOnSave: boolean | undefined;
-let originalPrettierEnable: boolean | undefined;
-let originalTabnineDisableAutoUpdate: boolean | undefined;
-let originalIntelliCodeSuggestSelection: string | undefined;
+let extensionContext: vscode.ExtensionContext | undefined;
+let inlineProviderDisposable: vscode.Disposable | undefined;
+// Timers started when an assignment is set (enable autocomplete, force first completion)
+let assignmentTimers: NodeJS.Timeout[] = [];
+
+function clearAssignmentTimers(): void {
+  assignmentTimers.forEach(t => clearTimeout(t));
+  assignmentTimers = [];
+}
 
 export function activate(context: vscode.ExtensionContext) {
+  extensionContext = context;
+
+  // A previous session that did not end cleanly (crash, kill) may have left our editor
+  // settings in place; put the user's settings back.
+  void restorePendingSettings(context);
+
   // Status bar item
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.command = 'codeProcessLogger.startSession';
@@ -86,6 +91,9 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 async function startSession(context: vscode.ExtensionContext): Promise<void> {
+  if (stoppingPromise) {
+    await stoppingPromise; // finish tearing down the previous session first
+  }
   if (isSessionActive) {
     vscode.window.showInformationMessage('Session is already active. Stop it first.');
     return;
@@ -148,6 +156,11 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
     return;
   }
 
+  // Apply session editor settings first. This never throws (unwritable settings are skipped),
+  // so a session can no longer end up half-started; without an open folder the user settings
+  // are used and restored the same way.
+  await applySessionSettings(context);
+
   // Start with no assignment (autocomplete disabled)
   const assignmentId = "-";
 
@@ -189,12 +202,11 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
   await completionProvider.registerTabHandler();
   completionProvider.startListening();
 
-  // Register as InlineCompletionItemProvider
-  const inlineProviderDisposable = vscode.languages.registerInlineCompletionItemProvider(
+  // Register as InlineCompletionItemProvider (disposed in stopSession)
+  inlineProviderDisposable = vscode.languages.registerInlineCompletionItemProvider(
     { pattern: '**' },
     completionProvider
   );
-  context.subscriptions.push(inlineProviderDisposable);
 
   editTracker = new EditTracker(writer, subjectId, assignmentId, shortPauseMs, midPauseMs, {
     enable: async () => {
@@ -257,14 +269,6 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
     });
   });
 
-  // Disable all external autocomplete (Cursor, Copilot, IntelliSense)
-  await disableExternalAutocomplete();
-
-  // Verify settings
-  const editorConfig = vscode.workspace.getConfiguration('editor');
-  const inlineSuggestEnabled = editorConfig.get<boolean>('inlineSuggest.enabled');
-  console.log('After config update - inlineSuggest.enabled:', inlineSuggestEnabled);
-
   // Log session start
   writer.writeEvent({
     EventType: EventType.SessionStart,
@@ -276,16 +280,6 @@ async function startSession(context: vscode.ExtensionContext): Promise<void> {
   isSessionActive = true;
   vscode.commands.executeCommand('setContext', 'codeProcessLogger.sessionActive', true);
   updateStatusBar(true);
-
-  // Save and disable auto-indent during session - server provides exact indentation
-  originalAutoIndent = editorConfig.get<string>('autoIndent');
-  await editorConfig.update('autoIndent', 'none', false);
-  console.log(`Auto-indent: saved '${originalAutoIndent}', set to 'none'`);
-
-  // Save and hide inline suggestion toolbar during session
-  originalInlineSuggestShowToolbar = editorConfig.get<string>('inlineSuggest.showToolbar');
-  await editorConfig.update('inlineSuggest.showToolbar', 'never', false);
-  console.log(`Inline suggestion toolbar: saved '${originalInlineSuggestShowToolbar}', set to 'never'`);
 
   // vscode.window.showInformationMessage(
   //   `Code logging started! Subject: ${subjectId}, Assignment: ${assignmentId}`
@@ -456,10 +450,10 @@ async function toggleAutocomplete(): Promise<void> {
   }
 
   const isEnabled = completionProvider.isEnabled();
+  // A visible completion is always dismissed (Level 1 can keep it visible while "disabled")
+  const hasCompletion = completionProvider.getOriginalCompletion() !== null;
 
-  if (isEnabled) {
-    // Check if there's a cached completion that's being rejected
-    const hasCompletion = completionProvider.getOriginalCompletion() !== null;
+  if (isEnabled || hasCompletion) {
 
     // Turn OFF: disable and clear ghost (clearCache=true to request fresh completion)
     completionProvider.setEnabled(false);
@@ -484,7 +478,11 @@ async function toggleAutocomplete(): Promise<void> {
     updateStatusBar(true, false);
     // vscode.window.showInformationMessage('자동완성이 꺼졌습니다 (Autocomplete disabled)');
   } else {
-    // Turn ON: enable and trigger completion
+    // Turn ON (command palette only; ESC is bound only while a completion is shown).
+    // Without an assignment there is nothing to complete.
+    if (!currentAssignmentId || currentAssignmentId === '-') {
+      return;
+    }
     completionProvider.setEnabled(true);
     await completionProvider.triggerCompletion(false); // false = autocomplete mode
     updateStatusBar(true, true, 'autocomplete');
@@ -510,6 +508,9 @@ async function insertCompletion(): Promise<void> {
   }
 
   const position = editor.selection.active;
+  if (editTracker) {
+    editTracker.expectProgrammaticInsert(completion);
+  }
   await editor.edit(editBuilder => {
     editBuilder.insert(position, completion);
   });
@@ -519,10 +520,28 @@ async function insertCompletion(): Promise<void> {
   vscode.window.showInformationMessage('✅ Code inserted!');
 }
 
-async function stopSession(): Promise<void> {
+// Set while a stop is in progress (it waits for the final upload), so a second click or
+// deactivate() joins it instead of running the teardown twice.
+let stoppingPromise: Promise<void> | undefined;
+
+function stopSession(silent: boolean = false): Promise<void> {
+  if (stoppingPromise) { return stoppingPromise; }
   if (!isSessionActive || !writer || !editTracker) {
-    vscode.window.showInformationMessage('No active session to stop.');
-    return;
+    if (!silent) { vscode.window.showInformationMessage('No active session to stop.'); }
+    return Promise.resolve();
+  }
+  stoppingPromise = doStopSession().finally(() => { stoppingPromise = undefined; });
+  return stoppingPromise;
+}
+
+async function doStopSession(): Promise<void> {
+  if (!writer || !editTracker) { return; }
+
+  clearAssignmentTimers();
+
+  // Close the chatbot so it cannot log into a later session
+  if (ChatbotPanel.currentPanel) {
+    ChatbotPanel.currentPanel.dispose();
   }
 
   editTracker.stop();
@@ -535,35 +554,29 @@ async function stopSession(): Promise<void> {
 
   const outputDir = writer.getOutputDir();
 
-  // Restore external autocomplete settings
-  await restoreExternalAutocomplete();
+  // Send the last events (incl. Session.End) before anything slow, so a closing VS Code
+  // has the best chance of delivering them
+  const uploader = logUploader;
+  logUploader = undefined;
+  const uploadDone = uploader ? uploader.dispose() : Promise.resolve();
 
-  // Restore auto-indent to original setting
-  const editorConfig = vscode.workspace.getConfiguration('editor');
-  if (originalAutoIndent !== undefined) {
-    await editorConfig.update('autoIndent', originalAutoIndent, false);
-    console.log(`Auto-indent restored to '${originalAutoIndent}'`);
-    originalAutoIndent = undefined;
+  // Restore every editor setting the session changed
+  if (extensionContext) {
+    await restoreSessionSettings(extensionContext);
   }
 
-  // Restore inline suggestion toolbar to original setting
-  if (originalInlineSuggestShowToolbar !== undefined) {
-    await editorConfig.update('inlineSuggest.showToolbar', originalInlineSuggestShowToolbar, false);
-    console.log(`Inline suggestion toolbar restored to '${originalInlineSuggestShowToolbar}'`);
-    originalInlineSuggestShowToolbar = undefined;
+  // Clean up completion provider and its inline provider registration
+  if (inlineProviderDisposable) {
+    inlineProviderDisposable.dispose();
+    inlineProviderDisposable = undefined;
   }
-
-  // Clean up completion provider
   if (completionProvider) {
     completionProvider.dispose();
     completionProvider = undefined;
   }
 
-  // Flush and clean up log uploader
-  if (logUploader) {
-    await logUploader.dispose();
-    logUploader = undefined;
-  }
+  // Wait for the final upload
+  await uploadDone;
 
   // // Randomly change student level for next session
   // const subjectId = editTracker['subjectId'];
@@ -603,10 +616,20 @@ function openChatbot(context: vscode.ExtensionContext): void {
   const currentCode = editor?.document.uri.scheme === 'file' ? editor.document.getText() : '';
   const fileName = editor?.document.uri.scheme === 'file' ? editor.document.fileName : '';
 
-  ChatbotPanel.createOrShow(context.extensionUri, writer, currentSubjectId, currentAssignmentId, currentCode, fileName);
+  ChatbotPanel.createOrShow(
+    context.extensionUri,
+    () => (isSessionActive && writer ? { writer, subjectId: currentSubjectId, assignmentId: currentAssignmentId } : undefined),
+    currentCode,
+    fileName,
+  );
 }
 
 async function setSubjectId(context: vscode.ExtensionContext): Promise<void> {
+  if (isSessionActive) {
+    // The uploader, session ID and log folder all belong to the logged-in student
+    vscode.window.showWarningMessage('세션 중에는 ID를 바꿀 수 없습니다. 세션을 종료한 뒤 다시 로그인하세요. (Stop the session to change the ID)');
+    return;
+  }
   const current = context.globalState.get<string>('subjectId') || '';
   const newId = await vscode.window.showInputBox({
     prompt: '참여자 ID를 입력하세요 (Enter your Subject ID)',
@@ -615,8 +638,6 @@ async function setSubjectId(context: vscode.ExtensionContext): Promise<void> {
   });
   if (newId !== undefined) {
     await context.globalState.update('subjectId', newId);
-    if (editTracker) { editTracker.updateSubjectId(newId); }
-    if (completionProvider) { completionProvider.setSubjectId(newId); }
     vscode.window.showInformationMessage(`Subject ID set to: ${newId}`);
   }
 }
@@ -657,13 +678,19 @@ async function setAssignmentId(context: vscode.ExtensionContext): Promise<void> 
   currentAssignmentId = trimmedId;
   editTracker.updateAssignmentId(trimmedId);
 
-  // Recreate log uploader with new assignment ID and session ID
+  // Recreate log uploader with new assignment ID and session ID. Swap first, then flush the
+  // old one: events logged while the old one is still sending go to the new uploader instead
+  // of an orphaned buffer.
   const config = vscode.workspace.getConfiguration('codeProcessLogger');
   const serverUrl = config.get<string>('serverUrl') || 'http://localhost:3000';
-  if (logUploader) {
-    await logUploader.dispose();
-  }
+  const oldUploader = logUploader;
   logUploader = new LogUploader(serverUrl, currentSubjectId, trimmedId, newSessionId);
+  if (oldUploader) {
+    void oldUploader.dispose();
+  }
+
+  // Timers from a previous assignment change must not fire for this one
+  clearAssignmentTimers();
 
   // Update completion provider's assignment ID and session ID
   if (completionProvider) {
@@ -676,14 +703,14 @@ async function setAssignmentId(context: vscode.ExtensionContext): Promise<void> 
     // Enable autocomplete if assignment is set (not "-")
     if (trimmedId !== '-') {
       // Use setTimeout to ensure EditTracker detects the state change (false → true)
-      setTimeout(() => {
-        if (completionProvider) {
+      assignmentTimers.push(setTimeout(() => {
+        if (completionProvider && isSessionActive && currentAssignmentId === trimmedId) {
           completionProvider.setEnabled(true);
           updateStatusBar(true, true, 'autocomplete');
 
           // Wait 5 seconds, then force trigger if no input detected
-          setTimeout(() => {
-            if (completionProvider && completionProvider.isEnabled()) {
+          assignmentTimers.push(setTimeout(() => {
+            if (completionProvider && completionProvider.isEnabled() && currentAssignmentId === trimmedId) {
               // Check if there's already a completion cached
               const hasCompletion = completionProvider.getOriginalCompletion();
               if (!hasCompletion) {
@@ -693,9 +720,9 @@ async function setAssignmentId(context: vscode.ExtensionContext): Promise<void> 
                 console.log('🔄 [ASSIGNMENT] Completion already cached, skipping force trigger');
               }
             }
-          }, 5000);
+          }, 5000));
         }
-      }, 300);
+      }, 300));
       vscode.window.showInformationMessage(`Assignment ID set to: ${trimmedId}. Autocomplete will be enabled.`);
     } else {
       vscode.window.showInformationMessage(`Assignment ID reset. Autocomplete disabled.`);
@@ -720,155 +747,6 @@ function updateStatusBar(active: boolean, autocompleteOn?: boolean, mode?: 'ques
     statusBarItem.command = 'codeProcessLogger.startSession';
     statusBarItem.tooltip = 'Click to start session';
   }
-}
-
-async function disableExternalAutocomplete(): Promise<void> {
-  const editorConfig = vscode.workspace.getConfiguration('editor');
-
-  // Save original values
-  originalQuickSuggestions = editorConfig.get('quickSuggestions');
-  originalSuggestOnTriggerCharacters = editorConfig.get<boolean>('suggestOnTriggerCharacters');
-  originalWordBasedSuggestions = editorConfig.get<string>('wordBasedSuggestions');
-  originalInlineSuggest = editorConfig.get<boolean>('inlineSuggest.enabled');
-
-  // Disable VS Code built-in autocomplete
-  await editorConfig.update('quickSuggestions', { other: false, comments: false, strings: false }, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('suggestOnTriggerCharacters', false, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('wordBasedSuggestions', 'off', vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('acceptSuggestionOnCommitCharacter', false, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('parameterHints.enabled', false, vscode.ConfigurationTarget.Workspace);
-
-  // Enable inline suggestions for our provider (but Copilot/Cursor are disabled by other settings)
-  await editorConfig.update('inlineSuggest.enabled', true, vscode.ConfigurationTarget.Workspace);
-
-  // Disable auto-closing brackets and quotes (interferes with level 1 follow-along)
-  await editorConfig.update('autoClosingBrackets', 'never', vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('autoClosingQuotes', 'never', vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('autoSurround', 'never', vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('autoIndent', 'none', vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('formatOnType', false, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('formatOnPaste', false, vscode.ConfigurationTarget.Workspace);
-
-  // Disable Python-specific auto-indent
-  try {
-    const pythonConfig = vscode.workspace.getConfiguration('python');
-    await pythonConfig.update('analysis.autoIndent', false, vscode.ConfigurationTarget.Workspace);
-  } catch (error) {
-    // Ignore if Python extension is not installed or setting doesn't exist
-    console.log('Python auto-indent setting not available (Python extension may not be installed)');
-  }
-
-  // Disable Cursor AI completions
-  try {
-    // Disable Cursor's main autocomplete feature
-    const cursorConfig = vscode.workspace.getConfiguration('cursor');
-    await cursorConfig.update('aiEnabled', false, vscode.ConfigurationTarget.Workspace);
-    await cursorConfig.update('codeActions', false, vscode.ConfigurationTarget.Workspace);
-
-    // Disable Cursor Tab completions
-    const cursorCppConfig = vscode.workspace.getConfiguration('cursor.cpp');
-    await cursorCppConfig.update('disabledLanguages', ['python', 'javascript', 'typescript', 'java', 'c', 'cpp', 'go', 'rust', 'html', 'css', 'json', 'markdown', 'plaintext'], vscode.ConfigurationTarget.Workspace);
-  } catch { /* Cursor not installed */ }
-
-  // Disable GitHub Copilot
-  try {
-    const copilotConfig = vscode.workspace.getConfiguration('github.copilot');
-    await copilotConfig.update('enable', { '*': false }, vscode.ConfigurationTarget.Workspace);
-  } catch { /* Copilot not installed */ }
-
-  // Disable Prettier and formatOnSave
-  originalFormatOnSave = editorConfig.get<boolean>('formatOnSave');
-  await editorConfig.update('formatOnSave', false, vscode.ConfigurationTarget.Workspace);
-
-  try {
-    const prettierConfig = vscode.workspace.getConfiguration('prettier');
-    originalPrettierEnable = prettierConfig.get<boolean>('enable');
-    await prettierConfig.update('enable', false, vscode.ConfigurationTarget.Workspace);
-  } catch { /* Prettier not installed */ }
-
-  // Disable Tabnine
-  try {
-    const tabnineConfig = vscode.workspace.getConfiguration('tabnine');
-    originalTabnineDisableAutoUpdate = tabnineConfig.get<boolean>('disable_auto_update');
-    await tabnineConfig.update('experimentalAutoImports', false, vscode.ConfigurationTarget.Workspace);
-    await tabnineConfig.update('disableLineRegex', true, vscode.ConfigurationTarget.Workspace);
-  } catch { /* Tabnine not installed */ }
-
-  // Disable IntelliCode
-  try {
-    const intelliCodeConfig = vscode.workspace.getConfiguration('vsintellicode');
-    originalIntelliCodeSuggestSelection = intelliCodeConfig.get<string>('modify.editor.suggestSelection');
-    await intelliCodeConfig.update('modify.editor.suggestSelection', 'automaticallyOverrodeDefaultValue', vscode.ConfigurationTarget.Workspace);
-  } catch { /* IntelliCode not installed */ }
-
-  // Disable AWS CodeWhisperer
-  try {
-    const awsConfig = vscode.workspace.getConfiguration('aws');
-    await awsConfig.update('codeWhisperer.shareCodeWhispererContentWithAWS', false, vscode.ConfigurationTarget.Workspace);
-  } catch { /* AWS Toolkit not installed */ }
-
-  // Disable Kite
-  try {
-    const kiteConfig = vscode.workspace.getConfiguration('kite');
-    await kiteConfig.update('showWelcomeNotificationOnStartup', false, vscode.ConfigurationTarget.Workspace);
-  } catch { /* Kite not installed */ }
-
-  // Disable all inline completion providers except ours
-  await editorConfig.update('inlineSuggest.suppressSuggestions', false, vscode.ConfigurationTarget.Workspace);
-}
-
-async function restoreExternalAutocomplete(): Promise<void> {
-  const editorConfig = vscode.workspace.getConfiguration('editor');
-
-  await editorConfig.update('quickSuggestions', originalQuickSuggestions, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('suggestOnTriggerCharacters', originalSuggestOnTriggerCharacters, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('wordBasedSuggestions', originalWordBasedSuggestions, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('acceptSuggestionOnCommitCharacter', undefined, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('parameterHints.enabled', undefined, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('inlineSuggest.enabled', undefined, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('autoClosingBrackets', undefined, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('autoClosingQuotes', undefined, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('autoSurround', undefined, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('autoIndent', undefined, vscode.ConfigurationTarget.Workspace);
-  await editorConfig.update('formatOnType', undefined, vscode.ConfigurationTarget.Workspace);
-
-  // Restore formatOnSave and Prettier
-  await editorConfig.update('formatOnSave', originalFormatOnSave, vscode.ConfigurationTarget.Workspace);
-
-  try {
-    const prettierConfig = vscode.workspace.getConfiguration('prettier');
-    await prettierConfig.update('enable', originalPrettierEnable, vscode.ConfigurationTarget.Workspace);
-  } catch { /* Prettier not installed */ }
-
-  // Restore Tabnine
-  try {
-    const tabnineConfig = vscode.workspace.getConfiguration('tabnine');
-    await tabnineConfig.update('experimentalAutoImports', undefined, vscode.ConfigurationTarget.Workspace);
-    await tabnineConfig.update('disableLineRegex', undefined, vscode.ConfigurationTarget.Workspace);
-  } catch { /* Tabnine not installed */ }
-
-  // Restore IntelliCode
-  try {
-    const intelliCodeConfig = vscode.workspace.getConfiguration('vsintellicode');
-    await intelliCodeConfig.update('modify.editor.suggestSelection', originalIntelliCodeSuggestSelection, vscode.ConfigurationTarget.Workspace);
-  } catch { /* IntelliCode not installed */ }
-
-  // Restore AWS CodeWhisperer
-  try {
-    const awsConfig = vscode.workspace.getConfiguration('aws');
-    await awsConfig.update('codeWhisperer.shareCodeWhispererContentWithAWS', undefined, vscode.ConfigurationTarget.Workspace);
-  } catch { /* AWS Toolkit not installed */ }
-
-  // Restore Kite
-  try {
-    const kiteConfig = vscode.workspace.getConfiguration('kite');
-    await kiteConfig.update('showWelcomeNotificationOnStartup', undefined, vscode.ConfigurationTarget.Workspace);
-  } catch { /* Kite not installed */ }
-
-  try {
-    const cursorCppConfig = vscode.workspace.getConfiguration('cursor.cpp');
-    await cursorCppConfig.update('disabledLanguages', undefined, vscode.ConfigurationTarget.Workspace);
-  } catch { /* Cursor not installed */ }
 }
 
 function serverRequestPut(serverUrl: string, apiPath: string, body: any): Promise<any> {
@@ -924,8 +802,10 @@ function formatDate(date: Date): string {
   return date.toISOString().replace(/[:.]/g, '-').substring(0, 19);
 }
 
-export function deactivate() {
+export function deactivate(): Promise<void> | undefined {
+  // Returning the promise makes VS Code wait for the final upload and the settings restore
   if (isSessionActive) {
-    stopSession();
+    return stopSession(true);
   }
+  return undefined;
 }

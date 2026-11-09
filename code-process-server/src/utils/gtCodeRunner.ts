@@ -58,9 +58,9 @@ export async function executeGTCode(
     const gtCode = fs.readFileSync(gtCodePath, 'utf-8');
     const wrappedCode = wrapCodeWithTimer(gtCode);
 
-    // Write to temp file
-    const tempDir = os.tmpdir();
-    const tempFile = path.join(tempDir, `gt_${Date.now()}_${path.basename(gtCodePath)}`);
+    // Write to its own temp folder (unique even when several runs start in the same millisecond)
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aips-gt-'));
+    const tempFile = path.join(tempDir, path.basename(gtCodePath));
     fs.writeFileSync(tempFile, wrappedCode, 'utf-8');
 
     const pythonProcess = spawn('python3', ['-u', tempFile]);
@@ -74,8 +74,9 @@ export async function executeGTCode(
       isTimedOut = true;
       pythonProcess.kill('SIGTERM');
 
+      // `killed` turns true as soon as SIGTERM is sent, so check whether it actually exited.
       setTimeout(() => {
-        if (!pythonProcess.killed) {
+        if (pythonProcess.exitCode === null && pythonProcess.signalCode === null) {
           pythonProcess.kill('SIGKILL');
         }
       }, 1000);
@@ -92,9 +93,9 @@ export async function executeGTCode(
     pythonProcess.on('close', (exitCode) => {
       clearTimeout(timeoutHandle);
 
-      // Clean up temp file
+      // Clean up temp folder
       try {
-        fs.unlinkSync(tempFile);
+        fs.rmSync(tempDir, { recursive: true, force: true });
       } catch (err) {
         // Ignore cleanup errors
       }
@@ -147,6 +148,9 @@ export async function executeGTCode(
         error: `Failed to run GT code: ${error.message}`
       });
     });
+
+    // EPIPE if the program exits before reading all input; without a listener it crashes the server.
+    pythonProcess.stdin.on('error', () => { /* ignored */ });
 
     // Write input to stdin
     if (input) {

@@ -3,10 +3,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { DEFAULT_KC_LEVELS } from '../modules/studentEvaluation/kcMapping';
+import { LOG_DIR, isSafeId } from '../utils/paths';
+import { requireAdmin } from '../utils/adminAuth';
 
 export const studentsRouter = Router();
 
-const DATA_DIR = process.env.LOG_DIR || './logs';
+const DATA_DIR = LOG_DIR;
 const STUDENTS_FILE = path.join(DATA_DIR, 'students.json');
 
 // Default test students to auto-register on server start
@@ -79,16 +81,41 @@ function saveStudents(students: Record<string, Student>): void {
   fs.writeFileSync(STUDENTS_FILE, JSON.stringify(students, null, 2), 'utf-8');
 }
 
+// Passwords are stored as "scrypt$<saltHex>$<hashHex>".
+// Older accounts used unsalted SHA-256 (64 hex chars); they are upgraded on the next successful login.
 function hashPassword(password: string): string {
-  return crypto.createHash('sha256').update(password).digest('hex');
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(password, salt, 32);
+  return `scrypt$${salt.toString('hex')}$${hash.toString('hex')}`;
+}
+
+function verifyPassword(password: string, stored: string): boolean {
+  if (stored.startsWith('scrypt$')) {
+    const [, saltHex, hashHex] = stored.split('$');
+    const expected = Buffer.from(hashHex, 'hex');
+    const actual = crypto.scryptSync(password, Buffer.from(saltHex, 'hex'), expected.length);
+    return crypto.timingSafeEqual(actual, expected);
+  }
+  const legacy = Buffer.from(crypto.createHash('sha256').update(password).digest('hex'));
+  const expected = Buffer.from(stored);
+  return legacy.length === expected.length && crypto.timingSafeEqual(legacy, expected);
 }
 
 // POST /api/students/register — researcher registers new student IDs
-studentsRouter.post('/register', (req: Request, res: Response) => {
-  const { studentIds, level } = req.body as { studentIds: string[]; level?: number };
+// Optional `passwords: { [id]: initialPassword }` presets a password so nobody else
+// can claim the account on first login.
+studentsRouter.post('/register', requireAdmin, (req: Request, res: Response) => {
+  const { studentIds, level, passwords } = req.body as {
+    studentIds: string[]; level?: number; passwords?: Record<string, string>;
+  };
 
   if (!studentIds || !Array.isArray(studentIds) || studentIds.length === 0) {
     res.status(400).json({ error: 'studentIds array is required' });
+    return;
+  }
+  const invalid = studentIds.filter(id => !isSafeId(id));
+  if (invalid.length > 0) {
+    res.status(400).json({ error: 'Invalid student IDs (letters, digits, Korean, _ - . only)', invalid });
     return;
   }
 
@@ -118,9 +145,10 @@ studentsRouter.post('/register', (req: Request, res: Response) => {
         }
       }
 
+      const initial = passwords && typeof passwords[id] === 'string' && passwords[id] ? passwords[id] : null;
       students[id] = {
         id,
-        passwordHash: null,
+        passwordHash: initial ? hashPassword(initial) : null,
         level: level || 1,
         kcLevels,
         createdAt: new Date().toISOString(),
@@ -138,13 +166,13 @@ studentsRouter.post('/register', (req: Request, res: Response) => {
 studentsRouter.post('/login', (req: Request, res: Response) => {
   const { studentId, password } = req.body as { studentId: string; password: string };
 
-  if (!studentId || !password) {
+  if (!studentId || !password || typeof studentId !== 'string' || typeof password !== 'string') {
     res.status(400).json({ error: 'studentId and password are required' });
     return;
   }
 
   const students = loadStudents();
-  const student = students[studentId];
+  const student = Object.prototype.hasOwnProperty.call(students, studentId) ? students[studentId] : undefined;
 
   if (!student) {
     res.status(404).json({ error: 'Student ID not found. Contact your researcher.' });
@@ -167,11 +195,14 @@ studentsRouter.post('/login', (req: Request, res: Response) => {
   }
 
   // Subsequent login: verify password
-  if (student.passwordHash !== hashPassword(password)) {
+  if (!verifyPassword(password, student.passwordHash)) {
     res.status(401).json({ error: 'Incorrect password.' });
     return;
   }
 
+  if (!student.passwordHash.startsWith('scrypt$')) {
+    student.passwordHash = hashPassword(password); // upgrade legacy SHA-256 hash
+  }
   student.lastLoginAt = new Date().toISOString();
   saveStudents(students);
   res.json({
@@ -183,7 +214,7 @@ studentsRouter.post('/login', (req: Request, res: Response) => {
 });
 
 // GET /api/students — list all students (for researcher)
-studentsRouter.get('/', (_req: Request, res: Response) => {
+studentsRouter.get('/', requireAdmin, (_req: Request, res: Response) => {
   const students = loadStudents();
   const list = Object.values(students).map(s => ({
     id: s.id,
@@ -196,7 +227,7 @@ studentsRouter.get('/', (_req: Request, res: Response) => {
 });
 
 // PUT /api/students/:id/level — update student level (for researcher)
-studentsRouter.put('/:id/level', (req: Request, res: Response) => {
+studentsRouter.put('/:id/level', requireAdmin, (req: Request, res: Response) => {
   const { id } = req.params;
   const { level } = req.body as { level: number };
 
@@ -217,7 +248,7 @@ studentsRouter.put('/:id/level', (req: Request, res: Response) => {
 });
 
 // PUT /api/students/:id/kc-levels — update specific KC levels (for researcher)
-studentsRouter.put('/:id/kc-levels', (req: Request, res: Response) => {
+studentsRouter.put('/:id/kc-levels', requireAdmin, (req: Request, res: Response) => {
   const { id } = req.params;
   const { kcLevels } = req.body as { kcLevels: Record<string, number> };
 
@@ -250,7 +281,7 @@ studentsRouter.put('/:id/kc-levels', (req: Request, res: Response) => {
 });
 
 // GET /api/students/:id/kc-levels — get current KC levels
-studentsRouter.get('/:id/kc-levels', (req: Request, res: Response) => {
+studentsRouter.get('/:id/kc-levels', requireAdmin, (req: Request, res: Response) => {
   const { id } = req.params;
 
   const students = loadStudents();
@@ -263,7 +294,7 @@ studentsRouter.get('/:id/kc-levels', (req: Request, res: Response) => {
 });
 
 // POST /api/students/:id/fix-level — fix student level (for control group)
-studentsRouter.post('/:id/fix-level', (req: Request, res: Response) => {
+studentsRouter.post('/:id/fix-level', requireAdmin, (req: Request, res: Response) => {
   const { id } = req.params;
   const { level } = req.body as { level: number | null };
 
@@ -302,7 +333,7 @@ studentsRouter.post('/:id/fix-level', (req: Request, res: Response) => {
 });
 
 // POST /api/students/:id/lock — lock student (skip BKT updates, keep current levels)
-studentsRouter.post('/:id/lock', (req: Request, res: Response) => {
+studentsRouter.post('/:id/lock', requireAdmin, (req: Request, res: Response) => {
   const { id } = req.params;
 
   const students = loadStudents();
@@ -323,7 +354,7 @@ studentsRouter.post('/:id/lock', (req: Request, res: Response) => {
 });
 
 // POST /api/students/:id/unlock — unlock student (enable BKT updates)
-studentsRouter.post('/:id/unlock', (req: Request, res: Response) => {
+studentsRouter.post('/:id/unlock', requireAdmin, (req: Request, res: Response) => {
   const { id } = req.params;
 
   const students = loadStudents();

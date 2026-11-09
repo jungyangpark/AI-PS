@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
+import { ASSIGNMENTS_DIR, isSafeId, safeJoin } from '../utils/paths';
 import { generateExpectedOutputs } from '../utils/gtCodeRunner';
 import { AssignmentConfig } from '../modules/assignmentConfig';
 import { TimeComplexity } from '../modules/codeEvaluator/complexityValidator';
@@ -39,6 +40,9 @@ async function registerSingleAssignment(assignmentData: RegisterAssignmentReques
   if (!assignmentId || !gtCodeFile || !testInputs || !inputSizes) {
     throw new Error('Missing required fields: assignmentId, gtCodeFile, testInputs, inputSizes');
   }
+  if (!isSafeId(assignmentId)) {
+    throw new Error('Invalid assignmentId (letters, digits, Korean, _ - . only)');
+  }
 
   if (testInputs.length !== inputSizes.length) {
     throw new Error('testInputs and inputSizes must have the same length');
@@ -47,7 +51,7 @@ async function registerSingleAssignment(assignmentData: RegisterAssignmentReques
   console.log(`📝 Registering assignment: ${assignmentId}`);
 
   // Locate GT code file
-  const gtCodePath = path.join(process.cwd(), 'gt_codes', gtCodeFile);
+  const gtCodePath = safeJoin(path.join(process.cwd(), 'gt_codes'), gtCodeFile);
 
   if (!fs.existsSync(gtCodePath)) {
     throw new Error(`GT code file not found: ${gtCodeFile}. Please place it in gt_codes/ directory.`);
@@ -88,7 +92,7 @@ async function registerSingleAssignment(assignmentData: RegisterAssignmentReques
   };
 
   // Save to assignments directory
-  const assignmentsDir = path.join(process.cwd(), 'assignments');
+  const assignmentsDir = ASSIGNMENTS_DIR;
 
   if (!fs.existsSync(assignmentsDir)) {
     fs.mkdirSync(assignmentsDir, { recursive: true });
@@ -200,7 +204,7 @@ router.post('/batch-register', async (req: Request, res: Response) => {
  */
 router.get('/', (req: Request, res: Response) => {
   try {
-    const assignmentsDir = path.join(process.cwd(), 'assignments');
+    const assignmentsDir = ASSIGNMENTS_DIR;
 
     if (!fs.existsSync(assignmentsDir)) {
       return res.json({
@@ -248,11 +252,10 @@ router.get('/', (req: Request, res: Response) => {
 router.get('/:assignmentId', (req: Request, res: Response) => {
   try {
     const { assignmentId } = req.params;
-    const assignmentFile = path.join(
-      process.cwd(),
-      'assignments',
-      `${assignmentId}.json`
-    );
+    if (!isSafeId(assignmentId)) {
+      return res.status(400).json({ success: false, error: 'Invalid assignmentId' });
+    }
+    const assignmentFile = path.join(ASSIGNMENTS_DIR, `${assignmentId}.json`);
 
     if (!fs.existsSync(assignmentFile)) {
       return res.status(404).json({
@@ -285,11 +288,10 @@ router.get('/:assignmentId', (req: Request, res: Response) => {
 router.delete('/:assignmentId', (req: Request, res: Response) => {
   try {
     const { assignmentId } = req.params;
-    const assignmentFile = path.join(
-      process.cwd(),
-      'assignments',
-      `${assignmentId}.json`
-    );
+    if (!isSafeId(assignmentId)) {
+      return res.status(400).json({ success: false, error: 'Invalid assignmentId' });
+    }
+    const assignmentFile = path.join(ASSIGNMENTS_DIR, `${assignmentId}.json`);
 
     if (!fs.existsSync(assignmentFile)) {
       return res.status(404).json({

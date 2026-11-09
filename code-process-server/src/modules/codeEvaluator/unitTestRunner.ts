@@ -11,6 +11,34 @@ function removeOutliers(values: number[], removeCount: number): number[] {
   return sorted.slice(removeCount, sorted.length - removeCount);
 }
 
+/** Mean after trimming outliers, only when there are enough samples to trim. */
+function trimmedMean(values: number[], removeCount: number): number {
+  if (values.length === 0) { return 0; }
+  const filtered = values.length > removeCount * 2 ? removeOutliers(values, removeCount) : values;
+  return filtered.reduce((sum, v) => sum + v, 0) / filtered.length;
+}
+
+/** Compare outputs ignoring trailing whitespace on each line and CRLF vs LF. */
+function normalizeOutput(s: string): string {
+  return s.replace(/\r\n?/g, '\n').split('\n').map(l => l.replace(/\s+$/, '')).join('\n').trim();
+}
+
+/** Write code into its own fresh temp folder (unique even for simultaneous submissions). */
+function writeTempScript(prefix: string, code: string): { dir: string; file: string } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `aips-${prefix}-`));
+  const file = path.join(dir, 'main.py');
+  fs.writeFileSync(file, code, 'utf-8');
+  return { dir, file };
+}
+
+function removeTempDir(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // Ignore cleanup errors
+  }
+}
+
 export interface UnitTestCase {
   name: string;
   input: any; // Can be string (for stdin) or array (for function args)
@@ -56,19 +84,17 @@ export async function measureGTExecutionTimes(
   const executionTimes: number[] = [];
   const memoryUsages: number[] = [];
 
-  const tempDir = os.tmpdir();
-  const tempFile = path.join(tempDir, `gt_code_${Date.now()}.py`);
-
+  let tempDir = '';
   try {
-    const wrappedCode = wrapCodeWithTimer(gtCode);
-    fs.writeFileSync(tempFile, wrappedCode, 'utf-8');
+    const temp = writeTempScript('gt', wrapCodeWithTimer(gtCode));
+    tempDir = temp.dir;
 
     for (let idx = 0; idx < testCases.length; idx++) {
       const test = testCases[idx];
       const testTimeout = 30000; // 30 seconds max for GT
 
       try {
-        const result = await runSingleStdinTest(tempFile, test, testTimeout);
+        const result = await runSingleStdinTest(temp.file, test, testTimeout);
         const executionTime = result.executionTime || 0;
         const peakMemory = result.peakMemory || 0;
         executionTimes.push(executionTime);
@@ -81,13 +107,6 @@ export async function measureGTExecutionTimes(
       }
     }
 
-    // Clean up
-    try {
-      fs.unlinkSync(tempFile);
-    } catch (err) {
-      // Ignore
-    }
-
     return { executionTimes, memoryUsages };
 
   } catch (error: any) {
@@ -96,6 +115,8 @@ export async function measureGTExecutionTimes(
       executionTimes: testCases.map(() => 0),
       memoryUsages: testCases.map(() => 0)
     };
+  } finally {
+    if (tempDir) { removeTempDir(tempDir); }
   }
 }
 
@@ -121,97 +142,75 @@ export async function runPythonUnitTests(
     gtMemoryUsages: []
   };
 
-  const tempDir = os.tmpdir();
-  const tempFile = path.join(tempDir, `code_${Date.now()}.py`);
-
+  let tempDir = '';
   try {
     // Wrap student code with time measurement
-    const wrappedCode = wrapCodeWithTimer(code);
-    fs.writeFileSync(tempFile, wrappedCode, 'utf-8');
+    const temp = writeTempScript('student', wrapCodeWithTimer(code));
+    tempDir = temp.dir;
+    const tempFile = temp.file;
 
+    // Correctness is decided by the first run. Only a passing test is re-run, to get a
+    // stable time/memory average, and those extra runs share a small time budget.
     const STUDENT_RUNS = 30;
     const STUDENT_OUTLIERS = 5;
+    const EXTRA_RUNS_BUDGET_MS = 5000;
 
     // Run each test case separately
     for (let idx = 0; idx < testCases.length; idx++) {
       const test = testCases[idx];
-      console.log(`      → Test ${idx + 1}/${testCases.length}: ${test.name} (${STUDENT_RUNS} runs)`);
+      console.log(`      → Test ${idx + 1}/${testCases.length}: ${test.name}`);
 
       // Safety timeout to prevent infinite loops
-      const gtTime = test.gtExecutionTime || 0;
-      const safetyTimeout = 30000; // 30 seconds safety limit
-
-      const testTimeout = test.timeout || safetyTimeout;
-      console.log(`        No time limit (GT: ${gtTime.toFixed(2)}ms, safety timeout: ${testTimeout}ms)`);
-
-      // Run 30 times to get stable measurements
-      const times: number[] = [];
-      const memories: number[] = [];
-      let output = '';
-      let lastError = '';
-      let success = false;
+      const testTimeout = test.timeout || 30000;
 
       try {
-        for (let run = 0; run < STUDENT_RUNS; run++) {
-          const result = await runSingleStdinTest(tempFile, test, testTimeout);
+        const first = await runSingleStdinTest(tempFile, test, testTimeout);
 
-          if (!result.success) {
-            // If any run fails, stop and report failure
-            lastError = result.error || 'Unknown error';
-            success = false;
-            break;
-          }
-
-          if (run === 0) {
-            output = result.output || '';
-          }
-
-          times.push(result.executionTime || 0);
-          memories.push(result.peakMemory || 0);
-          success = true;
-        }
-
-        if (!success) {
-          // Test failed - but calculate average time/memory from successful runs (if any)
-          let avgTime = 0;
-          let avgMemory = 0;
-
-          if (times.length > 0) {
-            // If we have some successful runs, calculate average
-            const filteredTimes = times.length > STUDENT_OUTLIERS * 2
-              ? removeOutliers(times, STUDENT_OUTLIERS)
-              : times;
-            const filteredMemories = memories.length > STUDENT_OUTLIERS * 2
-              ? removeOutliers(memories, STUDENT_OUTLIERS)
-              : memories;
-
-            avgTime = filteredTimes.reduce((sum, t) => sum + t, 0) / filteredTimes.length;
-            avgMemory = filteredMemories.reduce((sum, m) => sum + m, 0) / filteredMemories.length;
-          }
-
+        if (!first.success) {
           results.passed = false;
-          results.errors.push(`${test.name}: ${lastError}`);
+          results.errors.push(`${test.name}: ${first.error || 'Unknown error'}`);
           results.failedTests.push(test);
-          results.executionTimes.push(avgTime);
+          results.executionTimes.push(first.executionTime || 0);
           results.gtExecutionTimes.push(test.gtExecutionTime || 0);
-          results.memoryUsages.push(avgMemory);
+          results.memoryUsages.push(first.peakMemory || 0);
           results.gtMemoryUsages.push(test.gtMemoryUsage || 0);
-
-          if (avgTime > 0) {
-            console.log(`        ✗ Failed: ${lastError} (avg ${avgTime.toFixed(2)}ms from ${times.length} runs)`);
-          } else {
-            console.log(`        ✗ Failed: ${lastError}`);
-          }
+          console.log(`        ✗ Failed: ${first.error}`);
           console.log(`        Skipping remaining tests due to failure.`);
           break; // Stop testing remaining test cases
         }
 
-        // Remove outliers and calculate average
-        const filteredTimes = removeOutliers(times, STUDENT_OUTLIERS);
-        const filteredMemories = removeOutliers(memories, STUDENT_OUTLIERS);
+        const actualOutput = normalizeOutput(first.output || '');
+        const expectedOutput = normalizeOutput(String(test.expectedOutput));
 
-        const avgTime = filteredTimes.reduce((sum, t) => sum + t, 0) / filteredTimes.length;
-        const avgMemory = filteredMemories.reduce((sum, m) => sum + m, 0) / filteredMemories.length;
+        if (actualOutput !== expectedOutput) {
+          results.passed = false;
+          results.failedTests.push({
+            name: test.name,
+            input: test.input,
+            expectedOutput: test.expectedOutput,
+            actualOutput: actualOutput
+          } as any);
+          results.executionTimes.push(first.executionTime || 0);
+          results.gtExecutionTimes.push(test.gtExecutionTime || 0);
+          results.memoryUsages.push(first.peakMemory || 0);
+          results.gtMemoryUsages.push(test.gtMemoryUsage || 0);
+          console.log(`        ✗ Failed (output mismatch)`);
+          break; // Stop testing remaining test cases on output mismatch too
+        }
+
+        // Passed: collect more timing samples within the budget.
+        const times: number[] = [first.executionTime || 0];
+        const memories: number[] = [first.peakMemory || 0];
+        const budgetStart = Date.now();
+        while (times.length < STUDENT_RUNS && Date.now() - budgetStart < EXTRA_RUNS_BUDGET_MS) {
+          const r = await runSingleStdinTest(tempFile, test, testTimeout);
+          if (!r.success) { break; } // keep the verdict from the first run
+          times.push(r.executionTime || 0);
+          memories.push(r.peakMemory || 0);
+        }
+
+        const avgTime = trimmedMean(times, STUDENT_OUTLIERS);
+        const avgMemory = trimmedMean(memories, STUDENT_OUTLIERS);
 
         results.executionTimes.push(avgTime);
         results.gtExecutionTimes.push(test.gtExecutionTime || 0);
@@ -219,50 +218,16 @@ export async function runPythonUnitTests(
         results.gtMemoryUsages.push(test.gtMemoryUsage || 0);
 
         // Time-complexity limit (avg > GT * 2) disabled: only correctness is graded now.
-
-        if (output !== undefined) {
-          // Compare output (trim whitespace for comparison)
-          const actualOutput = output.trim();
-          const expectedOutput = String(test.expectedOutput).trim();
-
-          if (actualOutput === expectedOutput) {
-            results.passedTests++;
-            console.log(`        ✓ Passed (avg ${avgTime.toFixed(2)}ms, avg ${(avgMemory / 1024).toFixed(2)}KB)`);
-          } else {
-            results.passed = false;
-            results.failedTests.push({
-              name: test.name,
-              input: test.input,
-              expectedOutput: test.expectedOutput,
-              actualOutput: actualOutput
-            } as any);
-            console.log(`        ✗ Failed (output mismatch)`);
-            break; // Stop testing remaining test cases on output mismatch too
-          }
-        } else {
-          results.passed = false;
-          results.errors.push(`${test.name}: ${lastError}`);
-          results.failedTests.push(test);
-          results.executionTimes.push(0);
-          results.gtExecutionTimes.push(test.gtExecutionTime || 0);
-          results.memoryUsages.push(0);
-          results.gtMemoryUsages.push(test.gtMemoryUsage || 0);
-          console.log(`        ✗ Error: ${lastError}`);
-        }
+        results.passedTests++;
+        console.log(`        ✓ Passed (avg ${avgTime.toFixed(2)}ms over ${times.length} runs, avg ${(avgMemory / 1024).toFixed(2)}KB)`);
       } catch (error: any) {
         results.passed = false;
         results.errors.push(`${test.name}: ${error.message}`);
         results.failedTests.push(test);
         results.gtExecutionTimes.push(test.gtExecutionTime || 0);
         console.log(`        ✗ Error: ${error.message}`);
+        break;
       }
-    }
-
-    // Clean up temp file
-    try {
-      fs.unlinkSync(tempFile);
-    } catch (err) {
-      // Ignore cleanup errors
     }
 
     return results;
@@ -279,37 +244,62 @@ export async function runPythonUnitTests(
       memoryUsages: [],
       gtMemoryUsages: []
     };
+  } finally {
+    if (tempDir) { removeTempDir(tempDir); }
   }
 }
 
 /**
  * Wraps Python code with execution time and memory measurement
- * Time and memory are measured internally in Python and output to stderr
+ * Time and memory are measured internally in Python and output to stderr.
+ *
+ * - `import time` / `import sys` stay visible to the student code (as before), but the
+ *   measurement itself uses private aliases, so a student variable named `time` or `sys`
+ *   can no longer break grading.
+ * - `from __future__ import ...` lines must be the first statements, so they are hoisted.
  */
 function wrapCodeWithTimer(code: string): string {
-  return `import time
+  const futureLines: string[] = [];
+  const bodyLines = code.split('\n').map(line => {
+    if (/^from\s+__future__\s+import\s+/.test(line)) {
+      futureLines.push(line);
+      return ''; // keep line count
+    }
+    return line;
+  });
+
+  return `${futureLines.join('\n')}
+import time
 import sys
-import tracemalloc
+import time as __aips_time
+import sys as __aips_sys
+import tracemalloc as __aips_tracemalloc
 
 # Increase recursion limit for large inputs
-sys.setrecursionlimit(1000000)
+__aips_sys.setrecursionlimit(1000000)
 
 # Start memory tracking
-tracemalloc.start()
-__start_time__ = time.perf_counter()
+__aips_tracemalloc.start()
+__aips_start_time = __aips_time.perf_counter()
 
 # ===== Student code starts here =====
-${code}
+${bodyLines.join('\n')}
 # ===== Student code ends here =====
 
-__end_time__ = time.perf_counter()
-__current_mem__, __peak_mem__ = tracemalloc.get_traced_memory()
-tracemalloc.stop()
+__aips_end_time = __aips_time.perf_counter()
+__aips_current_mem, __aips_peak_mem = __aips_tracemalloc.get_traced_memory()
+__aips_tracemalloc.stop()
 
-sys.stderr.write(f"__EXECUTION_TIME__:{(__end_time__ - __start_time__) * 1000}\\n")
-sys.stderr.write(f"__PEAK_MEMORY__:{__peak_mem__}\\n")
-sys.stderr.flush()
+__aips_sys.stderr.write(f"__EXECUTION_TIME__:{(__aips_end_time - __aips_start_time) * 1000}\\n")
+__aips_sys.stderr.write(f"__PEAK_MEMORY__:{__aips_peak_mem}\\n")
+__aips_sys.stderr.flush()
 `;
+}
+
+/** Value of the LAST "<marker>:<number>" line (student output printed earlier cannot fake it). */
+function lastMarker(stderr: string, marker: string): number {
+  const matches = [...stderr.matchAll(new RegExp(`${marker}:([\\d.]+)`, 'g'))];
+  return matches.length ? parseFloat(matches[matches.length - 1][1]) : 0;
 }
 
 /**
@@ -321,7 +311,7 @@ function runSingleStdinTest(
   timeout: number
 ): Promise<{ success: boolean; output?: string; executionTime?: number; peakMemory?: number; error?: string }> {
   return new Promise((resolve) => {
-    const pythonProcess = spawn('python3', ['-u', scriptPath]);
+    const pythonProcess = spawn('python3', ['-u', scriptPath], { cwd: path.dirname(scriptPath) });
 
     let stdout = '';
     let stderr = '';
@@ -332,8 +322,9 @@ function runSingleStdinTest(
       isTimedOut = true;
       pythonProcess.kill('SIGTERM');
 
+      // `killed` turns true as soon as SIGTERM is sent, so check whether it actually exited.
       setTimeout(() => {
-        if (!pythonProcess.killed) {
+        if (pythonProcess.exitCode === null && pythonProcess.signalCode === null) {
           pythonProcess.kill('SIGKILL');
         }
       }, 1000);
@@ -371,21 +362,11 @@ function runSingleStdinTest(
       }
 
       // Extract execution time and peak memory from stderr
-      let executionTime = 0;
-      let peakMemory = 0;
-      let cleanedStderr = stderr;
-
-      const timeMatch = stderr.match(/__EXECUTION_TIME__:([\d.]+)/);
-      if (timeMatch) {
-        executionTime = parseFloat(timeMatch[1]);
-        cleanedStderr = cleanedStderr.replace(/__EXECUTION_TIME__:[\d.]+\n?/, '');
-      }
-
-      const memoryMatch = stderr.match(/__PEAK_MEMORY__:([\d.]+)/);
-      if (memoryMatch) {
-        peakMemory = parseFloat(memoryMatch[1]);
-        cleanedStderr = cleanedStderr.replace(/__PEAK_MEMORY__:[\d.]+\n?/, '');
-      }
+      const executionTime = lastMarker(stderr, '__EXECUTION_TIME__');
+      const peakMemory = lastMarker(stderr, '__PEAK_MEMORY__');
+      const cleanedStderr = stderr
+        .replace(/__EXECUTION_TIME__:[\d.]+\n?/g, '')
+        .replace(/__PEAK_MEMORY__:[\d.]+\n?/g, '');
 
       if (exitCode !== 0) {
         resolve({
@@ -410,6 +391,10 @@ function runSingleStdinTest(
         error: `Failed to run Python: ${error.message}`
       });
     });
+
+    // If the program exits without reading all of stdin, writing raises EPIPE.
+    // Without a listener that error would crash the whole server.
+    pythonProcess.stdin.on('error', () => { /* ignored; the exit code tells the story */ });
 
     // Write input to stdin
     if (testCase.input !== undefined && testCase.input !== null) {

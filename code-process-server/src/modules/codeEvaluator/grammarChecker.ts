@@ -15,11 +15,21 @@ export interface GrammarCheckResult {
  */
 export async function checkPythonGrammar(code: string): Promise<GrammarCheckResult> {
   return new Promise((resolve) => {
-    // Create temporary file to check syntax
-    const tempDir = os.tmpdir();
-    const tempFile = path.join(tempDir, `syntax_check_${Date.now()}.py`);
+    // Each check gets its own temp folder: unique even for simultaneous submissions, and the
+    // __pycache__ folder py_compile creates is removed together with it.
+    let tempDir = '';
+    const cleanup = () => {
+      if (!tempDir) { return; }
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch (err) {
+        // Ignore cleanup errors
+      }
+    };
 
     try {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aips-syntax-'));
+      const tempFile = path.join(tempDir, 'main.py');
       fs.writeFileSync(tempFile, code, 'utf-8');
 
       // Use python -m py_compile to check syntax
@@ -33,17 +43,7 @@ export async function checkPythonGrammar(code: string): Promise<GrammarCheckResu
       });
 
       pythonProcess.on('close', (exitCode) => {
-        // Clean up temp file
-        try {
-          fs.unlinkSync(tempFile);
-          // Also remove .pyc file if created
-          const pycFile = tempFile + 'c';
-          if (fs.existsSync(pycFile)) {
-            fs.unlinkSync(pycFile);
-          }
-        } catch (err) {
-          // Ignore cleanup errors
-        }
+        cleanup();
 
         if (exitCode === 0) {
           resolve({
@@ -55,7 +55,7 @@ export async function checkPythonGrammar(code: string): Promise<GrammarCheckResu
           const errors = stderr
             .split('\n')
             .filter(line => line.trim().length > 0)
-            .map(line => line.replace(tempFile, 'your code'));
+            .map(line => line.split(tempFile).join('your code'));
 
           resolve({
             isValid: false,
@@ -65,13 +65,7 @@ export async function checkPythonGrammar(code: string): Promise<GrammarCheckResu
       });
 
       pythonProcess.on('error', (error) => {
-        // Clean up on error
-        try {
-          fs.unlinkSync(tempFile);
-        } catch (err) {
-          // Ignore
-        }
-
+        cleanup();
         resolve({
           isValid: false,
           errors: [`Failed to check syntax: ${error.message}`]
@@ -79,6 +73,7 @@ export async function checkPythonGrammar(code: string): Promise<GrammarCheckResu
       });
 
     } catch (error: any) {
+      cleanup();
       resolve({
         isValid: false,
         errors: [`Error preparing syntax check: ${error.message}`]

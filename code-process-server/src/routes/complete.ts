@@ -5,6 +5,7 @@ import * as path from 'path';
 import { code2BlockAnalyzer, CodeBlock } from '../modules/code2block';
 import { loadAssignmentConfig } from '../modules/assignmentConfig';
 import { modelParams, requestOptions, getResponseText } from '../utils/claudeModel';
+import { LOG_DIR } from '../utils/paths';
 
 /**
  * Load the GT (reference solution) code for an assignment.
@@ -52,8 +53,7 @@ How to use the reference:
 `;
 }
 
-const DATA_DIR = process.env.LOG_DIR || './logs';
-const STUDENTS_FILE = path.join(DATA_DIR, 'students.json');
+const STUDENTS_FILE = path.join(LOG_DIR, 'students.json');
 
 interface Student {
   id: string;
@@ -387,6 +387,13 @@ async function handleQuestionMode(
   assignmentId?: string
 ) {
   const prompt = buildQuestionPrompt(prefix, suffix, language, fileName, loadGTCode(assignmentId));
+
+  // No question comment above the cursor: nothing to ask, so return an empty completion
+  // instead of sending an empty prompt (which the API rejects with an error).
+  if (!prompt.trim()) {
+    res.json({ completion: '', subjectId, timestamp: new Date().toISOString() });
+    return;
+  }
 
   const response = await retryWithBackoff(async () => {
     return await anthropic.messages.create({

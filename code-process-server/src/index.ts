@@ -12,6 +12,8 @@ import { debugRouter } from './routes/debug';
 import chatRouter from './routes/chat';
 import submitRouter from './routes/submit';
 import assignmentsRouter from './routes/assignments';
+import { requireAdmin } from './utils/adminAuth';
+import { LOG_DIR } from './utils/paths';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -33,8 +35,8 @@ app.use('/api/logs', logsRouter);
 // Student management
 app.use('/api/students', studentsRouter);
 
-// Debug logging
-app.use('/api/debug', debugRouter);
+// Debug logging (researcher only; the extension does not call it)
+app.use('/api/debug', requireAdmin, debugRouter);
 
 // Chatbot endpoint
 app.use('/api/chat', chatRouter);
@@ -42,18 +44,23 @@ app.use('/api/chat', chatRouter);
 // Submit endpoint
 app.use('/api/submit', submitRouter);
 
-// Assignment management
-app.use('/api/assignments', assignmentsRouter);
+// Assignment management (researcher only)
+app.use('/api/assignments', requireAdmin, assignmentsRouter);
 
 // Initialize default test students on startup
 initializeDefaultStudents();
 
 const server = app.listen(PORT, () => {
   console.log(`Code Process Server running on port ${PORT}`);
+  console.log(`Logs directory: ${LOG_DIR}`);
+  if (!process.env.ADMIN_KEY) {
+    console.log('ADMIN_KEY is not set: researcher endpoints only accept direct localhost requests.');
+  }
 });
 
-// Set server timeout to 10 minutes for code evaluation
-server.timeout = 300000; // 5 minutes
+// Allow up to 10 minutes per request (assignment registration runs GT code many times)
+server.timeout = 600000;
+server.requestTimeout = 600000; // Node's own per-request limit (default 300 s)
 server.keepAliveTimeout = 610000; // slightly longer than timeout
 server.headersTimeout = 620000; // slightly longer than keepAliveTimeout
 

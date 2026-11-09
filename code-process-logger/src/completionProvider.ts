@@ -149,6 +149,19 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     return undefined;
   }
 
+  /**
+   * A completion request ended without showing anything (no editor, editor switched, request
+   * failed). Turn autocomplete off and tell EditTracker, otherwise it stays "on" with nothing
+   * visible and the mid-pause timer that would bring it back is never set again.
+   */
+  private abandonCompletion(reason: string): void {
+    console.log(`🔵 [CLIENT] Completion abandoned (${reason}) - resetting autocomplete state`);
+    this.setEnabled(false);
+    if (this.onDisableCallback) {
+      this.onDisableCallback();
+    }
+  }
+
   async triggerCompletion(questionMode: boolean = false): Promise<void> {
     // Save requestNextBlock flag before it gets reset in fetchCompletion()
     const isRequestNextBlock = this.shouldRequestNextLine;
@@ -161,6 +174,7 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
     if (!editor) {
       this.logToFile('triggerCompletion', { error: 'No active editor' });
       console.log('🔵 [CLIENT] No active editor');
+      this.abandonCompletion('no active editor');
       return;
     }
 
@@ -186,6 +200,7 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
         if (!currentEditor || currentEditor.document !== document) {
           console.log(`🔵 [VALIDATION] Editor changed during request, ignoring completion`);
           this.logToFile('triggerCompletion', { validationFailed: 'editorChanged' });
+          this.abandonCompletion('editor changed');
           return;
         }
 
@@ -283,6 +298,7 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
       }
     } catch (error) {
       this.logToFile('triggerCompletion', { error: String(error) });
+      this.abandonCompletion('request failed');
     } finally {
       cancellation.dispose();
     }
@@ -819,6 +835,10 @@ export class LLMCompletionProvider implements vscode.InlineCompletionItemProvide
 
       // Set flag to ignore onChange events during Tab accept
       this.isAcceptingCompletion = true;
+      // Tell EditTracker this multi-char insert is ours, so it is not logged as X-Paste
+      if (this.editTracker) {
+        this.editTracker.expectProgrammaticInsert(insertText);
+      }
 
       console.log(`🔵 [TAB] Inserting "${insertText.substring(0, 50)}"`);
       await vscode.commands.executeCommand('editor.action.inlineSuggest.hide');

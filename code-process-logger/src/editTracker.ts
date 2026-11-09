@@ -38,6 +38,9 @@ export class EditTracker implements vscode.Disposable {
   private autocompleteRecentlyUsed: boolean = false;
   private autocompleteRecentTimer: NodeJS.Timeout | undefined;
   private autocompleteCallbacks: AutocompleteCallbacks | undefined;
+  // Text the extension itself is about to insert (Level 3 Tab accept, insertCompletion).
+  // Such inserts are logged as normal File.Edit, not as X-Paste (the Accept event is logged separately).
+  private expectedInserts: string[] = [];
 
   // Files to ignore for edit tracking (e.g., settings files changed by our extension)
   private static readonly IGNORED_PATHS = [
@@ -120,6 +123,7 @@ export class EditTracker implements vscode.Disposable {
 
   stop(): void {
     this.isActive = false;
+    this.expectedInserts = [];
     this.flushPendingEdits();
     this.clearTimers();
     if (this.autocompleteRecentTimer) {
@@ -168,11 +172,18 @@ export class EditTracker implements vscode.Disposable {
       // They used to dominate the Paste events, so they stay normal File.Edit inserts.
       const isWhitespaceOnly = change.text.trim() === '';
 
-      // Detect multi-char insert (3+ chars in a single event = not normal typing)
+      // Detect multi-char insert (3+ chars in a single event = not normal typing).
+      // A Replace with 3+ characters is a paste over a selection.
       const isMultiCharInsert =
-        editType === 'Insert' && change.text.length >= 3 && !isWhitespaceOnly;
+        (editType === 'Insert' || editType === 'Replace') && change.text.length >= 3 && !isWhitespaceOnly;
 
-      if (isMultiCharInsert) {
+      // Our own insert (accepted completion): keep it as a normal edit
+      const expectedIdx = isMultiCharInsert ? this.expectedInserts.indexOf(change.text) : -1;
+      if (expectedIdx !== -1) {
+        this.expectedInserts.splice(expectedIdx, 1);
+      }
+
+      if (isMultiCharInsert && expectedIdx === -1) {
         // Flush any pending normal edits first
         this.flushPendingEdits();
 
@@ -183,6 +194,7 @@ export class EditTracker implements vscode.Disposable {
           AssignmentID: this.assignmentId,
           EditType: editType,
           InsertText: `[L${line}:${col}]${change.text}`.substring(0, 500),
+          DeleteText: deleteText || undefined,
           SourceLocation: relativePath,
           CursorLine: line,
           CursorColumn: col,
@@ -363,17 +375,31 @@ export class EditTracker implements vscode.Disposable {
     if (this.autocompleteCallbacks) {
       this.autocompleteEnabled = true;
 
-      // enable() waits for the server's completion (seconds). Student edits made while it
-      // runs must still be logged, so no change is ignored here: the ghost text does not
-      // touch the document, and settings.json writes are dropped by shouldIgnore().
-      await this.autocompleteCallbacks.enable();
-
-      // Log AutocompleteOn event
+      // Log AutocompleteOn when it is switched on, before waiting for the server, so it never
+      // carries a timestamp after the Follow/Reject events it causes. If nothing ends up being
+      // shown, the disable path logs AutocompleteOff right after.
       this.writer.writeEvent({
         EventType: EventType.AutocompleteOn,
         SubjectID: this.subjectId,
         AssignmentID: this.assignmentId,
       });
+
+      // enable() waits for the server's completion (seconds). Student edits made while it
+      // runs must still be logged, so no change is ignored here: the ghost text does not
+      // touch the document, and settings.json writes are dropped by shouldIgnore().
+      await this.autocompleteCallbacks.enable();
+    }
+  }
+
+  /** The extension is about to insert `text` itself (e.g. Level 3 Tab accept). */
+  expectProgrammaticInsert(text: string): void {
+    if (text.length >= 3) {
+      this.expectedInserts.push(text);
+      // Forget it if the insert never happens (e.g. the edit failed)
+      setTimeout(() => {
+        const i = this.expectedInserts.indexOf(text);
+        if (i !== -1) { this.expectedInserts.splice(i, 1); }
+      }, 2000);
     }
   }
 
@@ -411,6 +437,13 @@ export class EditTracker implements vscode.Disposable {
    */
   resetAutocompleteState(): void {
     console.log('[EDIT] resetAutocompleteState called - autocomplete will be re-enabled after mid pause');
+    if (this.autocompleteEnabled && this.isActive) {
+      this.writer.writeEvent({
+        EventType: EventType.AutocompleteOff,
+        SubjectID: this.subjectId,
+        AssignmentID: this.assignmentId,
+      });
+    }
     this.autocompleteEnabled = false;
   }
 
@@ -446,6 +479,13 @@ export class EditTracker implements vscode.Disposable {
    */
   markAutocompleteActive(): void {
     console.log('[EDIT] markAutocompleteActive - autocomplete is now showing content');
+    if (!this.autocompleteEnabled && this.isActive) {
+      this.writer.writeEvent({
+        EventType: EventType.AutocompleteOn,
+        SubjectID: this.subjectId,
+        AssignmentID: this.assignmentId,
+      });
+    }
     this.autocompleteEnabled = true;
     this.clearTimers(); // Clear any pending midPauseTimer
   }
