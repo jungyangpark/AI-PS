@@ -228,6 +228,9 @@ def analyze_submission(csv_paths, current_submission, level=None):
         part['_file'] = i
         frames.append(part)
     df = pd.concat(frames, ignore_index=True)
+    # Leaving the page (X-Window.*, web course only) is logged for analysis, not scored:
+    # extra events would split the gaps that make up idle time.
+    df = df[~df['EventType'].astype(str).str.startswith('X-Window.')].reset_index(drop=True)
     df['ts'] = df['Timestamp'].apply(parse_ts)
     df = df.sort_values(['ts', 'EventID']).reset_index(drop=True)
 
